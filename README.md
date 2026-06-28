@@ -1,69 +1,99 @@
 # openrouter2
 
-`openrouter2` is a small async Rust client for the OpenRouter API. It currently
-wraps the chat completions endpoint and the generation cost lookup endpoint.
+`openrouter2` is a typed Rust client for the OpenRouter API. Version `0.2`
+targets the full current non-deprecated route set from the OpenRouter OpenAPI
+spec snapshot dated `2026-06-28`.
 
-The client stores only an injected `reqwest::Client` and normalized base URL.
-API keys are passed per call, which makes one shared HTTP client usable across
-many accounts without storing credentials in the client value.
+The crate keeps API keys out of client state. Pass the key per authenticated
+call; the client stores only the injected HTTP client and normalized base URL.
 
 ## Install
 
 ```toml
 [dependencies]
-openrouter2 = "0.1"
+openrouter2 = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-## Usage
+Async support is enabled by default. For a blocking client:
+
+```toml
+openrouter2 = { version = "0.2", features = ["blocking"] }
+```
+
+For blocking-only builds:
+
+```toml
+openrouter2 = { version = "0.2", default-features = false, features = ["blocking"] }
+```
+
+## Async Usage
 
 ```rust
 use openrouter2::{
-    ChatMessage, ChatRequest, DEFAULT_BASE_URL, OpenRouterClient,
+    AsyncOpenRouterClient, ChatCompletionRequest, ChatMessage, DEFAULT_BASE_URL,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let http = reqwest::Client::new();
-    let client = OpenRouterClient::try_new(http, DEFAULT_BASE_URL)?;
+    let client = AsyncOpenRouterClient::try_new(reqwest::Client::new(), DEFAULT_BASE_URL)?;
 
     let response = client
-        .chat_completion(
+        .create_chat_completion(
             "sk-or-v1-...",
-            ChatRequest {
-                model: "openai/gpt-4o-mini".to_owned(),
-                messages: vec![ChatMessage::user("Write one friendly sentence.")],
-                temperature: Some(0.2),
-                max_tokens: Some(64),
-                response_format: None,
-                provider: None,
-            },
+            ChatCompletionRequest::new(
+                "openai/gpt-4o-mini",
+                vec![ChatMessage::user("Write one friendly sentence.")],
+            )
+            .temperature(0.2)
+            .max_tokens(64),
         )
         .await?;
 
-    println!("{}", response.content);
+    println!("{response:#?}");
     Ok(())
 }
 ```
 
-## Base URL
+## Blocking Usage
 
-The default base URL is `https://openrouter.ai/api/v1`. To point at a proxy,
-test server, or future OpenRouter-compatible base, pass a different URL to
-`OpenRouterClient::try_new`.
+```rust
+use openrouter2::{
+    BlockingOpenRouterClient, ChatCompletionRequest, ChatMessage, DEFAULT_BASE_URL,
+};
 
-The base URL is normalized with a trailing slash, must use `http` or `https`,
-and must not include a query string or fragment.
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client =
+        BlockingOpenRouterClient::try_new(reqwest::blocking::Client::new(), DEFAULT_BASE_URL)?;
+
+    let response = client.create_chat_completion(
+        "sk-or-v1-...",
+        ChatCompletionRequest::new(
+            "openai/gpt-4o-mini",
+            vec![ChatMessage::user("Write one friendly sentence.")],
+        ),
+    )?;
+
+    println!("{response:#?}");
+    Ok(())
+}
+```
 
 ## API Surface
 
-- `OpenRouterClient::chat_completion` calls `POST /chat/completions`.
-- `OpenRouterClient::generation_cost` calls `GET /generation?id=...`.
-- `ChatRequest::response_format` and `ProviderPreferences` support structured
-  output options without forcing a larger request model.
-- `OpenRouterError::Api` includes the HTTP status and a truncated response body
-  for diagnostics.
+- Async client: `AsyncOpenRouterClient` behind default feature `async`.
+- Blocking client: `BlockingOpenRouterClient` behind feature `blocking`.
+- Route-complete flat methods for all non-deprecated OpenRouter routes.
+- Typed request/response shells with builder helpers for common fields.
+- Unknown-preserving string enums and flattened raw `serde_json::Value` extras.
+- Typed SSE streaming for chat, responses, and messages.
+- Raw JSON, binary, and multipart escape hatches for new API fields/routes.
+- `RequestOptions` for per-call headers such as `HTTP-Referer`, `X-Title`,
+  `X-Session-Id`, and custom headers.
+
+Deprecated OpenRouter operations are intentionally skipped. The deprecated
+Coinbase credits endpoint is not modeled.
 
 ## MSRV
 

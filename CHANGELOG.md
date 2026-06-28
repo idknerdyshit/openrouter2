@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-06-28
+
+### Added
+
+- Breaking full-route redesign for the current non-deprecated OpenRouter API
+  surface.
+- `AsyncOpenRouterClient` behind the default `async` feature.
+- `BlockingOpenRouterClient` behind the optional `blocking` feature.
+- Shared typed request/response shells, unknown-preserving enums, raw extras,
+  per-request options, binary responses, file uploads, and raw request escape
+  hatches.
+- Typed SSE streaming for chat, responses, and messages.
+- Route snapshot for the OpenRouter OpenAPI spec dated 2026-06-28.
+
+### Changed
+
+- Renamed the primary chat method to `create_chat_completion`.
+- Replaced cost-only generation lookup with typed generation metadata/content
+  APIs plus a `generation_cost` convenience helper.
+
 ## [0.1.0] - 2026-06-28
 
 ### Added
