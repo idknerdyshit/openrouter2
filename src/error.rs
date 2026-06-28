@@ -4,6 +4,8 @@ use std::error::Error as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::observability::{redact_header_value, redact_reqwest_error_message, redact_text};
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct OpenRouterApiError {
     #[serde(default)]
@@ -54,7 +56,7 @@ pub(crate) fn reqwest_error_message(e: &reqwest::Error) -> String {
             msg = format!("{msg}: {source}");
         }
     }
-    msg
+    redact_reqwest_error_message(e, msg)
 }
 
 pub(crate) fn truncate(s: String) -> String {
@@ -83,6 +85,7 @@ pub(crate) fn parse_api_error(
     headers: &reqwest::header::HeaderMap,
     body: String,
 ) -> OpenRouterError {
+    let body = truncate(redact_text(&body));
     let error = serde_json::from_str::<Value>(&body)
         .ok()
         .and_then(|value| value.get("error").cloned())
@@ -90,7 +93,7 @@ pub(crate) fn parse_api_error(
 
     OpenRouterError::Api(Box::new(ApiError {
         status: status.as_u16(),
-        body: truncate(body),
+        body,
         error,
         request_id: header_value(headers, "x-request-id")
             .or_else(|| header_value(headers, "openrouter-request-id")),
@@ -102,19 +105,26 @@ fn header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Stri
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned)
+        .map(|value| redact_header_value(name, value))
 }
 
 fn stringify_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
     headers
         .iter()
-        .filter_map(|(name, value)| Some((name.to_string(), value.to_str().ok()?.to_owned())))
+        .filter_map(|(name, value)| {
+            let name = name.to_string();
+            let value = redact_header_value(&name, value.to_str().ok()?);
+            Some((name, value))
+        })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::truncate;
+    use reqwest::StatusCode;
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    use super::{OpenRouterError, parse_api_error, truncate};
 
     #[test]
     fn truncate_below_max_is_unchanged() {
@@ -129,5 +139,46 @@ mod tests {
         let out = truncate(s);
         assert!(out.ends_with('…'));
         assert!(out.len() <= 2047 + '…'.len_utf8());
+    }
+
+    #[test]
+    fn api_error_redacts_sensitive_headers_body_and_parsed_error() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer sk-test-secret"),
+        );
+        headers.insert("set-cookie", HeaderValue::from_static("session=secret"));
+        headers.insert(
+            "x-request-id",
+            HeaderValue::from_static("req-sk-test-secret"),
+        );
+
+        let err = parse_api_error(
+            StatusCode::UNAUTHORIZED,
+            &headers,
+            r#"{"error":{"message":"bad Bearer sk-other-secret"},"key":"sk-test-secret"}"#
+                .to_owned(),
+        );
+
+        let OpenRouterError::Api(api) = err else {
+            panic!("expected api error");
+        };
+
+        assert_eq!(api.request_id.as_deref(), Some("req-[REDACTED]"));
+        assert_eq!(
+            api.headers.get("authorization").map(String::as_str),
+            Some("[REDACTED]")
+        );
+        assert_eq!(
+            api.headers.get("set-cookie").map(String::as_str),
+            Some("[REDACTED]")
+        );
+        assert!(!api.body.contains("sk-test-secret"));
+        assert!(!api.body.contains("sk-other-secret"));
+        assert_eq!(
+            api.error.and_then(|error| error.message).as_deref(),
+            Some("bad Bearer [REDACTED]")
+        );
     }
 }

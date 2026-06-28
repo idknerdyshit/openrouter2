@@ -4,6 +4,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::error::{parse_api_error, reqwest_error_message};
+use crate::observability::RequestTrace;
 use crate::routes::{HttpMethod, MultipartFile, RawJsonRequest, RawMultipartRequest};
 use crate::streaming::{AsyncSseStream, decode_async_sse};
 use crate::transport::{
@@ -114,11 +115,19 @@ impl AsyncOpenRouterClient {
         query: &[(String, String)],
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
-        let resp = self
+        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let resp = match self
             .request_builder(method, path, api_key, query, options)?
             .send()
             .await
-            .map_err(|e| OpenRouterError::Transport(reqwest_error_message(&e)))?;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                trace.transport_error(&e);
+                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+            }
+        };
+        trace.response(resp.status(), resp.headers());
         parse_json_response(resp).await
     }
 
@@ -131,12 +140,20 @@ impl AsyncOpenRouterClient {
         body: &B,
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
-        let resp = self
+        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let resp = match self
             .request_builder(method, path, api_key, query, options)?
             .json(body)
             .send()
             .await
-            .map_err(|e| OpenRouterError::Transport(reqwest_error_message(&e)))?;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                trace.transport_error(&e);
+                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+            }
+        };
+        trace.response(resp.status(), resp.headers());
         parse_json_response(resp).await
     }
 
@@ -174,10 +191,15 @@ impl AsyncOpenRouterClient {
         if let Some(body) = body {
             builder = builder.json(body);
         }
-        let resp = builder
-            .send()
-            .await
-            .map_err(|e| OpenRouterError::Transport(reqwest_error_message(&e)))?;
+        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let resp = match builder.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                trace.transport_error(&e);
+                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+            }
+        };
+        trace.response(resp.status(), resp.headers());
         parse_binary_response(resp).await
     }
 
@@ -196,12 +218,20 @@ impl AsyncOpenRouterClient {
         options: &RequestOptions,
     ) -> Result<Value, OpenRouterError> {
         let form = multipart_form(files, fields)?;
-        let resp = self
+        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let resp = match self
             .request_builder(method, path, api_key, query, options)?
             .multipart(form)
             .send()
             .await
-            .map_err(|e| OpenRouterError::Transport(reqwest_error_message(&e)))?;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                trace.transport_error(&e);
+                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+            }
+        };
+        trace.response(resp.status(), resp.headers());
         parse_json_response(resp).await
     }
 
@@ -212,12 +242,20 @@ impl AsyncOpenRouterClient {
         body: &B,
         options: &RequestOptions,
     ) -> Result<AsyncSseStream<T>, OpenRouterError> {
-        let resp = self
+        let trace = RequestTrace::start(HttpMethod::Post, path, &[], true);
+        let resp = match self
             .request_builder(HttpMethod::Post, path, Some(api_key), &[], options)?
             .json(body)
             .send()
             .await
-            .map_err(|e| OpenRouterError::Transport(reqwest_error_message(&e)))?;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                trace.transport_error(&e);
+                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+            }
+        };
+        trace.response(resp.status(), resp.headers());
         let status = resp.status();
         if !status.is_success() {
             let headers = resp.headers().clone();

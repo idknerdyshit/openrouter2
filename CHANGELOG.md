@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   surface.
 - `AsyncOpenRouterClient` behind the default `async` feature.
 - `BlockingOpenRouterClient` behind the optional `blocking` feature.
+- `tracing` events for request lifecycle observability with secret redaction.
 - Shared typed request/response shells, unknown-preserving enums, raw extras,
   per-request options, binary responses, file uploads, and raw request escape
   hatches.
@@ -24,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Renamed the primary chat method to `create_chat_completion`.
 - Replaced cost-only generation lookup with typed generation metadata/content
   APIs plus a `generation_cost` convenience helper.
+- Redacted sensitive response headers, API error bodies, and transport error
+  URLs before they are exposed through error metadata.
 
 ## [0.1.0] - 2026-06-28
 

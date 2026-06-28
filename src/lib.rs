@@ -9,6 +9,7 @@
 //! HTTP client and normalized base URL.
 
 mod error;
+mod observability;
 mod options;
 mod routes;
 mod spec;

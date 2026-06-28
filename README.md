@@ -92,6 +92,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `RequestOptions` for per-call headers such as `HTTP-Referer`, `X-Title`,
   `X-Session-Id`, and custom headers.
 
+## Observability
+
+The crate emits `tracing` events for HTTP request start, completion, non-2xx
+responses, and transport errors. It does not install or configure a tracing
+subscriber; applications remain in control of where those events go.
+
+Trace fields include method, route template, status, elapsed milliseconds,
+request id when present, query count, and whether the request was authenticated.
+Request and response bodies are not logged. Bearer tokens, OpenRouter-style
+`sk-...` keys, credentials, query values, and sensitive headers such as
+`Authorization`, `Cookie`, `Set-Cookie`, token, password, secret, and API-key
+fields are redacted before they reach tracing or API error metadata.
+
 Deprecated OpenRouter operations are intentionally skipped. The deprecated
 Coinbase credits endpoint is not modeled.
 
