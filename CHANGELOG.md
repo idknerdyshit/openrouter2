@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-06-30
+
+### Added
+
+- Explicit unchecked custom-base constructors and normalizers for local test
+  servers and trusted proxies.
+- Raw multipart query builder support.
+- Shared client route declarations and route-operation coverage checks.
+
+### Changed
+
+- Tightened default base URL and endpoint path validation to require HTTPS
+  OpenRouter bases and relative API paths.
+- Reworked request construction to validate endpoints before tracing and
+  reduced async/blocking route-list duplication.
+- Removed `Default` from request types with required fields and added
+  multi-model request constructors.
+- Updated README guidance for blocking-only and custom-base usage.
+- Expanded `.gitignore` with standard Rust, editor, environment, coverage,
+  profiling, and OS metadata entries.
+
+### Fixed
+
+- Redacted response error metadata more narrowly by allowlisting safe headers.
+- Removed fragments from URL/path redaction and covered absolute raw-path
+  rejection before send.
+- Avoided extra multipart upload buffer copies.
+- Avoided unnecessary JSON cloning on typed SSE events.
+
+### Security
+
+- Prevented raw request paths from escaping the configured base URL and leaking
+  bearer tokens.
+- Restricted default constructors to trusted HTTPS OpenRouter base URLs.
+
 ## [0.2.1] - 2026-06-28
 
 ### Added

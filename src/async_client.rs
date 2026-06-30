@@ -3,12 +3,14 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::client_routes::{dynamic_route_methods, static_route_methods};
 use crate::error::{parse_api_error, reqwest_error_message};
 use crate::observability::RequestTrace;
 use crate::routes::{HttpMethod, MultipartFile, RawJsonRequest, RawMultipartRequest};
 use crate::streaming::{AsyncSseStream, decode_async_sse};
 use crate::transport::{
-    QueryParams, endpoint_url_from_base, normalize_base_url, path_segment, with_query,
+    QueryParams, endpoint_url_from_base, normalize_base_url, normalize_unchecked_base_url,
+    path_segment, with_query,
 };
 use crate::types::*;
 use crate::{OpenRouterError, RequestOptions};
@@ -27,10 +29,23 @@ impl AsyncOpenRouterClient {
         http: reqwest::Client,
         base_url: impl Into<String>,
     ) -> Result<Self, OpenRouterError> {
+        Self::from_normalized_base_url(http, normalize_base_url(base_url.into()))
+    }
+
+    pub fn try_new_unchecked_base_url(
+        http: reqwest::Client,
+        base_url: impl Into<String>,
+    ) -> Result<Self, OpenRouterError> {
+        Self::from_normalized_base_url(http, normalize_unchecked_base_url(base_url.into()))
+    }
+
+    fn from_normalized_base_url(
+        http: reqwest::Client,
+        base_url: Result<Url, String>,
+    ) -> Result<Self, OpenRouterError> {
         Ok(Self {
             http,
-            base_url: normalize_base_url(base_url.into())
-                .map_err(OpenRouterError::InvalidBaseUrl)?,
+            base_url: base_url.map_err(OpenRouterError::InvalidBaseUrl)?,
         })
     }
 
@@ -115,12 +130,9 @@ impl AsyncOpenRouterClient {
         query: &[(String, String)],
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
+        let builder = self.request_builder(method, path, api_key, query, options)?;
         let trace = RequestTrace::start(method, path, query, api_key.is_some());
-        let resp = match self
-            .request_builder(method, path, api_key, query, options)?
-            .send()
-            .await
-        {
+        let resp = match builder.send().await {
             Ok(resp) => resp,
             Err(e) => {
                 trace.transport_error(&e);
@@ -140,13 +152,11 @@ impl AsyncOpenRouterClient {
         body: &B,
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
-        let trace = RequestTrace::start(method, path, query, api_key.is_some());
-        let resp = match self
+        let builder = self
             .request_builder(method, path, api_key, query, options)?
-            .json(body)
-            .send()
-            .await
-        {
+            .json(body);
+        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let resp = match builder.send().await {
             Ok(resp) => resp,
             Err(e) => {
                 trace.transport_error(&e);
@@ -218,13 +228,11 @@ impl AsyncOpenRouterClient {
         options: &RequestOptions,
     ) -> Result<Value, OpenRouterError> {
         let form = multipart_form(files, fields)?;
-        let trace = RequestTrace::start(method, path, query, api_key.is_some());
-        let resp = match self
+        let builder = self
             .request_builder(method, path, api_key, query, options)?
-            .multipart(form)
-            .send()
-            .await
-        {
+            .multipart(form);
+        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let resp = match builder.send().await {
             Ok(resp) => resp,
             Err(e) => {
                 trace.transport_error(&e);
@@ -242,13 +250,11 @@ impl AsyncOpenRouterClient {
         body: &B,
         options: &RequestOptions,
     ) -> Result<AsyncSseStream<T>, OpenRouterError> {
-        let trace = RequestTrace::start(HttpMethod::Post, path, &[], true);
-        let resp = match self
+        let builder = self
             .request_builder(HttpMethod::Post, path, Some(api_key), &[], options)?
-            .json(body)
-            .send()
-            .await
-        {
+            .json(body);
+        let trace = RequestTrace::start(HttpMethod::Post, path, &[], true);
+        let resp = match builder.send().await {
             Ok(resp) => resp,
             Err(e) => {
                 trace.transport_error(&e);
@@ -485,32 +491,8 @@ macro_rules! async_post_auth {
 }
 
 impl AsyncOpenRouterClient {
-    async_get_auth!(
-        get_user_activity,
-        get_user_activity_with_options,
-        "activity",
-        ActivityResponse
-    );
-    async_get_auth!(
-        get_analytics_meta,
-        get_analytics_meta_with_options,
-        "analytics/meta",
-        AnalyticsMetaResponse
-    );
-    async_post_auth!(
-        query_analytics,
-        query_analytics_with_options,
-        "analytics/query",
-        AnalyticsQueryRequest,
-        AnalyticsQueryResponse
-    );
-    async_post_auth!(
-        create_audio_transcription,
-        create_audio_transcription_with_options,
-        "audio/transcriptions",
-        TranscriptionRequest,
-        TranscriptionResponse
-    );
+    static_route_methods!(async_get_auth, async_get_public, async_post_auth);
+
     pub async fn exchange_auth_code_for_api_key(
         &self,
         request: AuthKeyExchangeRequest,
@@ -527,215 +509,6 @@ impl AsyncOpenRouterClient {
         self.request_json_body(HttpMethod::Post, "auth/keys", None, &[], &request, &options)
             .await
     }
-    async_post_auth!(
-        create_auth_key_code,
-        create_auth_key_code_with_options,
-        "auth/keys/code",
-        AuthKeyCodeRequest,
-        AuthKeyCodeResponse
-    );
-    async_get_public!(
-        list_benchmarks,
-        list_benchmarks_with_options,
-        "benchmarks",
-        BenchmarksResponse
-    );
-    async_get_auth!(
-        list_byok_keys,
-        list_byok_keys_with_options,
-        "byok",
-        ByokListResponse
-    );
-    async_post_auth!(
-        create_byok_key,
-        create_byok_key_with_options,
-        "byok",
-        ByokCreateRequest,
-        ByokCreateResponse
-    );
-    async_get_public!(
-        get_task_classifications,
-        get_task_classifications_with_options,
-        "classifications/task",
-        TaskClassificationResponse
-    );
-    async_get_auth!(
-        get_credits,
-        get_credits_with_options,
-        "credits",
-        CreditsResponse
-    );
-    async_get_public!(
-        get_app_rankings,
-        get_app_rankings_with_options,
-        "datasets/app-rankings",
-        AppRankingsResponse
-    );
-    async_get_public!(
-        get_rankings_daily,
-        get_rankings_daily_with_options,
-        "datasets/rankings-daily",
-        RankingsDailyResponse
-    );
-    async_post_auth!(
-        create_embeddings,
-        create_embeddings_with_options,
-        "embeddings",
-        EmbeddingsRequest,
-        EmbeddingsResponse
-    );
-    async_get_public!(
-        list_embedding_models,
-        list_embedding_models_with_options,
-        "embeddings/models",
-        EmbeddingModelsResponse
-    );
-    async_get_public!(
-        list_zdr_endpoints,
-        list_zdr_endpoints_with_options,
-        "endpoints/zdr",
-        EndpointsZdrResponse
-    );
-    async_get_auth!(
-        list_files,
-        list_files_with_options,
-        "files",
-        FileListResponse
-    );
-    async_get_auth!(
-        list_guardrails,
-        list_guardrails_with_options,
-        "guardrails",
-        GuardrailListResponse
-    );
-    async_post_auth!(
-        create_guardrail,
-        create_guardrail_with_options,
-        "guardrails",
-        GuardrailCreateRequest,
-        GuardrailCreateResponse
-    );
-    async_get_auth!(
-        list_key_assignments,
-        list_key_assignments_with_options,
-        "guardrails/assignments/keys",
-        KeyAssignmentsResponse
-    );
-    async_get_auth!(
-        list_member_assignments,
-        list_member_assignments_with_options,
-        "guardrails/assignments/members",
-        MemberAssignmentsResponse
-    );
-    async_post_auth!(
-        create_image,
-        create_image_with_options,
-        "images",
-        ImageGenerationRequest,
-        ImageGenerationResponse
-    );
-    async_get_public!(
-        list_image_models,
-        list_image_models_with_options,
-        "images/models",
-        ImageModelsResponse
-    );
-    async_get_auth!(
-        get_current_key,
-        get_current_key_with_options,
-        "key",
-        CurrentKeyResponse
-    );
-    async_get_auth!(list_keys, list_keys_with_options, "keys", KeyListResponse);
-    async_post_auth!(
-        create_key,
-        create_key_with_options,
-        "keys",
-        KeyCreateRequest,
-        KeyCreateResponse
-    );
-    async_get_public!(
-        list_models,
-        list_models_with_options,
-        "models",
-        ModelListResponse
-    );
-    async_get_public!(
-        get_models_count,
-        get_models_count_with_options,
-        "models/count",
-        ModelCountResponse
-    );
-    async_get_auth!(
-        list_user_models,
-        list_user_models_with_options,
-        "models/user",
-        UserModelsResponse
-    );
-    async_get_auth!(
-        list_observability_destinations,
-        list_observability_destinations_with_options,
-        "observability/destinations",
-        ObservabilityDestinationListResponse
-    );
-    async_post_auth!(
-        create_observability_destination,
-        create_observability_destination_with_options,
-        "observability/destinations",
-        ObservabilityDestinationCreateRequest,
-        ObservabilityDestinationCreateResponse
-    );
-    async_get_auth!(
-        list_organization_members,
-        list_organization_members_with_options,
-        "organization/members",
-        OrganizationMembersResponse
-    );
-    async_get_auth!(
-        list_presets,
-        list_presets_with_options,
-        "presets",
-        PresetListResponse
-    );
-    async_get_public!(
-        list_providers,
-        list_providers_with_options,
-        "providers",
-        ProviderListResponse
-    );
-    async_post_auth!(
-        create_rerank,
-        create_rerank_with_options,
-        "rerank",
-        RerankRequest,
-        RerankResponse
-    );
-    async_post_auth!(
-        create_video,
-        create_video_with_options,
-        "videos",
-        VideoGenerationRequest,
-        VideoGenerationResponse
-    );
-    async_get_public!(
-        list_video_models,
-        list_video_models_with_options,
-        "videos/models",
-        VideoModelsResponse
-    );
-    async_get_auth!(
-        list_workspaces,
-        list_workspaces_with_options,
-        "workspaces",
-        WorkspaceListResponse
-    );
-    async_post_auth!(
-        create_workspace,
-        create_workspace_with_options,
-        "workspaces",
-        WorkspaceCreateRequest,
-        WorkspaceCreateResponse
-    );
 }
 
 impl AsyncOpenRouterClient {
@@ -987,37 +760,13 @@ macro_rules! dyn_post_auth {
 }
 
 impl AsyncOpenRouterClient {
-    dyn_get_auth!(
-        get_byok_key,
-        get_byok_key_with_options,
-        ByokResponse,
-        |id: &str| format!("byok/{}", path_segment(id))
-    );
-    dyn_delete_auth!(
-        delete_byok_key,
-        delete_byok_key_with_options,
-        ByokDeleteResponse,
-        |id: &str| format!("byok/{}", path_segment(id))
-    );
-    dyn_patch_auth!(
-        update_byok_key,
-        update_byok_key_with_options,
-        ByokUpdateRequest,
-        ByokUpdateResponse,
-        |id: &str| format!("byok/{}", path_segment(id))
-    );
-
-    dyn_get_auth!(
-        get_file_metadata,
-        get_file_metadata_with_options,
-        FileMetadataResponse,
-        |file_id: &str| format!("files/{}", path_segment(file_id))
-    );
-    dyn_delete_auth!(
-        delete_file,
-        delete_file_with_options,
-        FileDeleteResponse,
-        |file_id: &str| format!("files/{}", path_segment(file_id))
+    dynamic_route_methods!(
+        dyn_get_auth,
+        dyn_get_public,
+        dyn_delete_auth,
+        dyn_patch_auth,
+        dyn_put_auth,
+        dyn_post_auth
     );
 
     pub async fn download_file_content(
@@ -1046,184 +795,6 @@ impl AsyncOpenRouterClient {
         .await
     }
 
-    dyn_get_auth!(
-        get_guardrail,
-        get_guardrail_with_options,
-        GuardrailResponse,
-        |id: &str| format!("guardrails/{}", path_segment(id))
-    );
-    dyn_delete_auth!(
-        delete_guardrail,
-        delete_guardrail_with_options,
-        GuardrailDeleteResponse,
-        |id: &str| format!("guardrails/{}", path_segment(id))
-    );
-    dyn_patch_auth!(
-        update_guardrail,
-        update_guardrail_with_options,
-        GuardrailUpdateRequest,
-        GuardrailUpdateResponse,
-        |id: &str| format!("guardrails/{}", path_segment(id))
-    );
-    dyn_get_auth!(
-        list_guardrail_key_assignments,
-        list_guardrail_key_assignments_with_options,
-        KeyAssignmentsResponse,
-        |id: &str| format!("guardrails/{}/assignments/keys", path_segment(id))
-    );
-    dyn_post_auth!(
-        bulk_assign_keys_to_guardrail,
-        bulk_assign_keys_to_guardrail_with_options,
-        BulkAssignKeysRequest,
-        BulkAssignKeysResponse,
-        |id: &str| format!("guardrails/{}/assignments/keys", path_segment(id))
-    );
-    dyn_post_auth!(
-        bulk_unassign_keys_from_guardrail,
-        bulk_unassign_keys_from_guardrail_with_options,
-        BulkUnassignKeysRequest,
-        BulkUnassignKeysResponse,
-        |id: &str| format!("guardrails/{}/assignments/keys/remove", path_segment(id))
-    );
-    dyn_get_auth!(
-        list_guardrail_member_assignments,
-        list_guardrail_member_assignments_with_options,
-        MemberAssignmentsResponse,
-        |id: &str| format!("guardrails/{}/assignments/members", path_segment(id))
-    );
-    dyn_post_auth!(
-        bulk_assign_members_to_guardrail,
-        bulk_assign_members_to_guardrail_with_options,
-        BulkAssignMembersRequest,
-        BulkAssignMembersResponse,
-        |id: &str| format!("guardrails/{}/assignments/members", path_segment(id))
-    );
-    dyn_post_auth!(
-        bulk_unassign_members_from_guardrail,
-        bulk_unassign_members_from_guardrail_with_options,
-        BulkUnassignMembersRequest,
-        BulkUnassignMembersResponse,
-        |id: &str| format!("guardrails/{}/assignments/members/remove", path_segment(id))
-    );
-
-    dyn_get_public!(
-        list_image_model_endpoints,
-        list_image_model_endpoints_with_options,
-        ImageModelEndpointsResponse,
-        |author: &str, slug: &str| format!(
-            "images/models/{}/{}/endpoints",
-            path_segment(author),
-            path_segment(slug)
-        )
-    );
-    dyn_get_auth!(
-        get_key,
-        get_key_with_options,
-        KeyResponse,
-        |hash: &str| format!("keys/{}", path_segment(hash))
-    );
-    dyn_delete_auth!(
-        delete_key,
-        delete_key_with_options,
-        KeyDeleteResponse,
-        |hash: &str| format!("keys/{}", path_segment(hash))
-    );
-    dyn_patch_auth!(
-        update_key,
-        update_key_with_options,
-        KeyUpdateRequest,
-        KeyUpdateResponse,
-        |hash: &str| format!("keys/{}", path_segment(hash))
-    );
-
-    dyn_get_public!(
-        get_model,
-        get_model_with_options,
-        ModelResponse,
-        |author: &str, slug: &str| format!("model/{}/{}", path_segment(author), path_segment(slug))
-    );
-    dyn_get_public!(
-        list_model_endpoints,
-        list_model_endpoints_with_options,
-        ModelEndpointsResponse,
-        |author: &str, slug: &str| format!(
-            "models/{}/{}/endpoints",
-            path_segment(author),
-            path_segment(slug)
-        )
-    );
-
-    dyn_get_auth!(
-        get_observability_destination,
-        get_observability_destination_with_options,
-        ObservabilityDestinationResponse,
-        |id: &str| format!("observability/destinations/{}", path_segment(id))
-    );
-    dyn_delete_auth!(
-        delete_observability_destination,
-        delete_observability_destination_with_options,
-        ObservabilityDestinationDeleteResponse,
-        |id: &str| format!("observability/destinations/{}", path_segment(id))
-    );
-    dyn_patch_auth!(
-        update_observability_destination,
-        update_observability_destination_with_options,
-        ObservabilityDestinationUpdateRequest,
-        ObservabilityDestinationUpdateResponse,
-        |id: &str| format!("observability/destinations/{}", path_segment(id))
-    );
-
-    dyn_get_auth!(
-        get_preset,
-        get_preset_with_options,
-        PresetResponse,
-        |slug: &str| format!("presets/{}", path_segment(slug))
-    );
-    dyn_post_auth!(
-        create_preset_from_chat_completion,
-        create_preset_from_chat_completion_with_options,
-        ChatCompletionRequest,
-        PresetCreateFromInferenceResponse,
-        |slug: &str| format!("presets/{}/chat/completions", path_segment(slug))
-    );
-    dyn_post_auth!(
-        create_preset_from_message,
-        create_preset_from_message_with_options,
-        MessagesRequest,
-        PresetCreateFromInferenceResponse,
-        |slug: &str| format!("presets/{}/messages", path_segment(slug))
-    );
-    dyn_post_auth!(
-        create_preset_from_response,
-        create_preset_from_response_with_options,
-        ResponsesRequest,
-        PresetCreateFromInferenceResponse,
-        |slug: &str| format!("presets/{}/responses", path_segment(slug))
-    );
-    dyn_get_auth!(
-        list_preset_versions,
-        list_preset_versions_with_options,
-        PresetVersionListResponse,
-        |slug: &str| format!("presets/{}/versions", path_segment(slug))
-    );
-    dyn_get_auth!(
-        get_preset_version,
-        get_preset_version_with_options,
-        PresetVersionResponse,
-        |slug: &str, version: &str| format!(
-            "presets/{}/versions/{}",
-            path_segment(slug),
-            path_segment(version)
-        )
-    );
-
-    dyn_get_auth!(
-        get_video,
-        get_video_with_options,
-        VideoStatusResponse,
-        |job_id: &str| format!("videos/{}", path_segment(job_id))
-    );
-
     pub async fn download_video_content(
         &self,
         api_key: &str,
@@ -1249,67 +820,6 @@ impl AsyncOpenRouterClient {
         )
         .await
     }
-
-    dyn_get_auth!(
-        get_workspace,
-        get_workspace_with_options,
-        WorkspaceResponse,
-        |id: &str| format!("workspaces/{}", path_segment(id))
-    );
-    dyn_delete_auth!(
-        delete_workspace,
-        delete_workspace_with_options,
-        WorkspaceDeleteResponse,
-        |id: &str| format!("workspaces/{}", path_segment(id))
-    );
-    dyn_patch_auth!(
-        update_workspace,
-        update_workspace_with_options,
-        WorkspaceUpdateRequest,
-        WorkspaceUpdateResponse,
-        |id: &str| format!("workspaces/{}", path_segment(id))
-    );
-    dyn_get_auth!(
-        list_workspace_budgets,
-        list_workspace_budgets_with_options,
-        WorkspaceBudgetListResponse,
-        |id: &str| format!("workspaces/{}/budgets", path_segment(id))
-    );
-    dyn_delete_auth!(
-        delete_workspace_budget,
-        delete_workspace_budget_with_options,
-        WorkspaceBudgetDeleteResponse,
-        |id: &str, interval: &str| format!(
-            "workspaces/{}/budgets/{}",
-            path_segment(id),
-            path_segment(interval)
-        )
-    );
-    dyn_put_auth!(
-        upsert_workspace_budget,
-        upsert_workspace_budget_with_options,
-        WorkspaceBudgetUpsertRequest,
-        WorkspaceBudgetUpsertResponse,
-        |id: &str, interval: &str| format!(
-            "workspaces/{}/budgets/{}",
-            path_segment(id),
-            path_segment(interval)
-        )
-    );
-    dyn_post_auth!(
-        bulk_add_workspace_members,
-        bulk_add_workspace_members_with_options,
-        BulkAddWorkspaceMembersRequest,
-        BulkAddWorkspaceMembersResponse,
-        |id: &str| format!("workspaces/{}/members/add", path_segment(id))
-    );
-    dyn_post_auth!(
-        bulk_remove_workspace_members,
-        bulk_remove_workspace_members_with_options,
-        BulkRemoveWorkspaceMembersRequest,
-        BulkRemoveWorkspaceMembersResponse,
-        |id: &str| format!("workspaces/{}/members/remove", path_segment(id))
-    );
 }
 
 async fn parse_json_response<T: DeserializeOwned>(
@@ -1363,7 +873,10 @@ fn multipart_form(
         form = form.text(key, value);
     }
     for file in files {
-        let mut part = multipart::Part::bytes(file.bytes.to_vec());
+        let length = u64::try_from(file.bytes.len()).map_err(|_| {
+            OpenRouterError::InvalidHeader("multipart file is too large".to_owned())
+        })?;
+        let mut part = multipart::Part::stream_with_length(file.bytes, length);
         if let Some(file_name) = file.file_name {
             part = part.file_name(file_name);
         }
@@ -1385,8 +898,8 @@ fn is_not_found(err: &OpenRouterError) -> bool {
 mod tests {
     use super::AsyncOpenRouterClient;
     use crate::{
-        AuthKeyExchangeRequest, ChatCompletionRequest, ChatMessage, DEFAULT_BASE_URL,
-        OpenRouterError, ProviderPreferences, RequestOptions,
+        AuthKeyExchangeRequest, ChatCompletionRequest, ChatMessage, DEFAULT_BASE_URL, HttpMethod,
+        OpenRouterError, ProviderPreferences, RawJsonRequest, RequestOptions,
     };
     use serde_json::Value;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1532,7 +1045,9 @@ mod tests {
             r#"{"id":"gen-123","model":"openai/gpt-4o-mini","choices":[{"message":{"role":"assistant","content":"hello there"}}],"usage":{"prompt_tokens":12,"completion_tokens":3}}"#,
         )
         .await;
-        let client = AsyncOpenRouterClient::try_new(reqwest::Client::new(), base_url).unwrap();
+        let client =
+            AsyncOpenRouterClient::try_new_unchecked_base_url(reqwest::Client::new(), base_url)
+                .unwrap();
 
         let response = client
             .create_chat_completion("sk-test", sample_chat_request())
@@ -1561,7 +1076,9 @@ mod tests {
     #[tokio::test]
     async fn request_options_add_headers() {
         let (base_url, request) = serve_once("200 OK", r#"{"data":[]}"#).await;
-        let client = AsyncOpenRouterClient::try_new(reqwest::Client::new(), base_url).unwrap();
+        let client =
+            AsyncOpenRouterClient::try_new_unchecked_base_url(reqwest::Client::new(), base_url)
+                .unwrap();
 
         let _ = client
             .list_keys_with_options(
@@ -1585,7 +1102,9 @@ mod tests {
     #[tokio::test]
     async fn auth_code_exchange_does_not_send_authorization() {
         let (base_url, request) = serve_once("200 OK", r#"{"key":"sk-new","user_id":null}"#).await;
-        let client = AsyncOpenRouterClient::try_new(reqwest::Client::new(), base_url).unwrap();
+        let client =
+            AsyncOpenRouterClient::try_new_unchecked_base_url(reqwest::Client::new(), base_url)
+                .unwrap();
 
         let response = client
             .exchange_auth_code_for_api_key(AuthKeyExchangeRequest::new().with_field("code", "abc"))
@@ -1607,7 +1126,9 @@ mod tests {
             r#"{"error":{"message":"boom","type":"server_error"}}"#,
         )
         .await;
-        let client = AsyncOpenRouterClient::try_new(reqwest::Client::new(), base_url).unwrap();
+        let client =
+            AsyncOpenRouterClient::try_new_unchecked_base_url(reqwest::Client::new(), base_url)
+                .unwrap();
 
         let err = client
             .create_chat_completion(api_key, sample_chat_request())
@@ -1631,7 +1152,9 @@ mod tests {
     #[tokio::test]
     async fn generation_cost_returns_none_for_not_yet_queryable_generation() {
         let (base_url, request) = serve_once("404 Not Found", "{}").await;
-        let client = AsyncOpenRouterClient::try_new(reqwest::Client::new(), base_url).unwrap();
+        let client =
+            AsyncOpenRouterClient::try_new_unchecked_base_url(reqwest::Client::new(), base_url)
+                .unwrap();
 
         let cost = client.generation_cost("sk-cost", "gen-789").await.unwrap();
 
@@ -1640,6 +1163,25 @@ mod tests {
         assert_eq!(recorded.method, "GET");
         assert_eq!(recorded.path, "/generation?id=gen-789");
         assert_eq!(recorded.header("authorization"), Some("Bearer sk-cost"));
+    }
+
+    #[tokio::test]
+    async fn raw_absolute_paths_are_rejected_before_send() {
+        let client = AsyncOpenRouterClient::try_new_unchecked_base_url(
+            reqwest::Client::new(),
+            "http://127.0.0.1:9",
+        )
+        .unwrap();
+
+        let err = client
+            .raw_json(
+                Some("sk-test"),
+                RawJsonRequest::new(HttpMethod::Get, "https://user:pass@example.test/secret"),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, OpenRouterError::InvalidBaseUrl(_)));
     }
 
     #[tokio::test]

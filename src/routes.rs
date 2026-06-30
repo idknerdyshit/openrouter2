@@ -117,6 +117,11 @@ impl RawMultipartRequest {
         self
     }
 
+    pub fn with_query(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.query.push((key.into(), value.into()));
+        self
+    }
+
     pub fn with_field(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.fields.push((key.into(), value.into()));
         self

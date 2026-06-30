@@ -297,7 +297,7 @@ impl ProviderPreferences {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -358,10 +358,54 @@ pub struct ChatCompletionRequest {
 
 impl ChatCompletionRequest {
     pub fn new(model: impl Into<String>, messages: Vec<ChatMessage>) -> Self {
-        Self {
-            model: Some(model.into()),
+        Self::from_model_fields(Some(model.into()), None, messages)
+    }
+
+    pub fn new_with_models(
+        models: impl IntoIterator<Item = impl Into<String>>,
+        messages: Vec<ChatMessage>,
+    ) -> Self {
+        Self::from_model_fields(
+            None,
+            Some(models.into_iter().map(Into::into).collect()),
             messages,
-            ..Self::default()
+        )
+    }
+
+    fn from_model_fields(
+        model: Option<String>,
+        models: Option<Vec<String>>,
+        messages: Vec<ChatMessage>,
+    ) -> Self {
+        Self {
+            model,
+            models,
+            messages,
+            temperature: None,
+            max_tokens: None,
+            max_completion_tokens: None,
+            response_format: None,
+            provider: None,
+            stream: None,
+            stream_options: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            reasoning: None,
+            reasoning_effort: None,
+            stop: None,
+            top_p: None,
+            top_k: None,
+            top_logprobs: None,
+            logprobs: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            repetition_penalty: None,
+            seed: None,
+            user: None,
+            session_id: None,
+            metadata: None,
+            extra: JsonObject::new(),
         }
     }
 
@@ -450,7 +494,7 @@ pub struct ChatCompletionResponse {
 
 pub type ChatStreamChunk = ChatCompletionResponse;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResponsesRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -482,10 +526,35 @@ pub struct ResponsesRequest {
 
 impl ResponsesRequest {
     pub fn new(model: impl Into<String>, input: impl Into<Value>) -> Self {
+        Self::from_model_fields(Some(model.into()), None, input.into())
+    }
+
+    pub fn new_with_models(
+        models: impl IntoIterator<Item = impl Into<String>>,
+        input: impl Into<Value>,
+    ) -> Self {
+        Self::from_model_fields(
+            None,
+            Some(models.into_iter().map(Into::into).collect()),
+            input.into(),
+        )
+    }
+
+    fn from_model_fields(model: Option<String>, models: Option<Vec<String>>, input: Value) -> Self {
         Self {
-            model: Some(model.into()),
-            input: Some(input.into()),
-            ..Self::default()
+            model,
+            models,
+            input: Some(input),
+            instructions: None,
+            previous_response_id: None,
+            temperature: None,
+            max_output_tokens: None,
+            tools: None,
+            tool_choice: None,
+            provider: None,
+            stream: None,
+            store: None,
+            extra: JsonObject::new(),
         }
     }
 
@@ -534,7 +603,7 @@ pub struct StreamedResponsesEvent {
     pub extra: JsonObject,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MessagesRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
@@ -563,7 +632,15 @@ impl MessagesRequest {
         Self {
             model: model.into(),
             messages,
-            ..Self::default()
+            max_tokens: None,
+            system: None,
+            temperature: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            provider: None,
+            stream: None,
+            extra: JsonObject::new(),
         }
     }
 
@@ -605,7 +682,7 @@ pub struct MessagesResponse {
 
 pub type MessagesStreamEvent = MessagesResponse;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EmbeddingsRequest {
     pub model: String,
     pub input: Value,
@@ -626,7 +703,7 @@ impl EmbeddingsRequest {
 json_object_type!(EmbeddingsResponse);
 json_object_type!(EmbeddingModelsResponse);
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RerankRequest {
     pub model: String,
     pub query: String,
@@ -648,7 +725,7 @@ impl RerankRequest {
 
 json_object_type!(RerankResponse);
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SpeechRequest {
     pub model: String,
     pub input: String,
@@ -671,12 +748,14 @@ impl SpeechRequest {
             model: model.into(),
             input: input.into(),
             voice: voice.into(),
-            ..Self::default()
+            response_format: None,
+            speed: None,
+            extra: JsonObject::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TranscriptionRequest {
     pub model: String,
     pub input_audio: Value,
@@ -691,14 +770,15 @@ impl TranscriptionRequest {
         Self {
             model: model.into(),
             input_audio: input_audio.into(),
-            ..Self::default()
+            language: None,
+            extra: JsonObject::new(),
         }
     }
 }
 
 json_object_type!(TranscriptionResponse);
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImageGenerationRequest {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -711,7 +791,8 @@ impl ImageGenerationRequest {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
-            ..Self::default()
+            prompt: None,
+            extra: JsonObject::new(),
         }
     }
 
@@ -725,7 +806,7 @@ json_object_type!(ImageGenerationResponse);
 json_object_type!(ImageModelsResponse);
 json_object_type!(ImageModelEndpointsResponse);
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VideoGenerationRequest {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -738,7 +819,8 @@ impl VideoGenerationRequest {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
-            ..Self::default()
+            prompt: None,
+            extra: JsonObject::new(),
         }
     }
 
@@ -760,7 +842,7 @@ pub struct BinaryResponse {
     pub content_disposition: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileUploadRequest {
     #[serde(skip)]
     pub bytes: Bytes,
@@ -916,7 +998,9 @@ json_object_type!(BulkRemoveWorkspaceMembersResponse);
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatRole, ProviderPreferences};
+    use super::{
+        ChatCompletionRequest, ChatMessage, ChatRole, ProviderPreferences, ResponsesRequest,
+    };
 
     #[test]
     fn unknown_enums_round_trip() {
@@ -935,5 +1019,24 @@ mod tests {
         assert_eq!(value["require_parameters"], true);
         assert_eq!(value["only"][0], "openai");
         assert_eq!(value["custom"], true);
+    }
+
+    #[test]
+    fn multi_model_request_constructors_serialize_models_without_model() {
+        let chat = ChatCompletionRequest::new_with_models(
+            ["openai/gpt-4o-mini", "anthropic/claude-haiku"],
+            vec![ChatMessage::user("hi")],
+        );
+        let chat = serde_json::to_value(chat).unwrap();
+        assert!(chat.get("model").is_none());
+        assert_eq!(chat["models"][0], "openai/gpt-4o-mini");
+
+        let responses = ResponsesRequest::new_with_models(
+            ["openai/gpt-4o-mini", "anthropic/claude-haiku"],
+            "hi",
+        );
+        let responses = serde_json::to_value(responses).unwrap();
+        assert!(responses.get("model").is_none());
+        assert_eq!(responses["models"][1], "anthropic/claude-haiku");
     }
 }

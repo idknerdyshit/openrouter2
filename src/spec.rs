@@ -442,15 +442,65 @@ pub const NON_DEPRECATED_ROUTES: &[RouteSpec] = &[
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::NON_DEPRECATED_ROUTES;
+
+    const MANUAL_CLIENT_OPERATIONS: &[&str] = &[
+        "create_audio_speech",
+        "create_chat_completion",
+        "create_message",
+        "create_response",
+        "download_file_content",
+        "download_video_content",
+        "exchange_auth_code_for_api_key",
+        "get_generation",
+        "get_generation_content",
+        "upload_file",
+    ];
+
+    const STATIC_CLIENT_OPERATIONS: &[&str] = &crate::client_routes::static_route_operations!();
+    const DYNAMIC_CLIENT_OPERATIONS: &[&str] = &crate::client_routes::dynamic_route_operations!();
 
     #[test]
     fn route_snapshot_covers_all_current_non_deprecated_routes() {
-        assert_eq!(NON_DEPRECATED_ROUTES.len(), 86);
         assert!(
             !NON_DEPRECATED_ROUTES
                 .iter()
                 .any(|route| route.path == "/credits/coinbase")
         );
+    }
+
+    #[test]
+    fn route_snapshot_operations_are_wired_to_clients() {
+        let spec_operations = NON_DEPRECATED_ROUTES
+            .iter()
+            .map(|route| route.operation)
+            .collect::<BTreeSet<_>>();
+        let client_operations = STATIC_CLIENT_OPERATIONS
+            .iter()
+            .copied()
+            .chain(DYNAMIC_CLIENT_OPERATIONS.iter().copied())
+            .chain(MANUAL_CLIENT_OPERATIONS.iter().copied())
+            .collect::<BTreeSet<_>>();
+
+        let missing = spec_operations
+            .difference(&client_operations)
+            .copied()
+            .collect::<Vec<_>>();
+        let extra = client_operations
+            .difference(&spec_operations)
+            .copied()
+            .collect::<Vec<_>>();
+
+        assert!(missing.is_empty(), "missing client operations: {missing:?}");
+        assert!(extra.is_empty(), "extra client operations: {extra:?}");
+
+        assert_eq!(STATIC_CLIENT_OPERATIONS.len(), 38);
+        assert_eq!(DYNAMIC_CLIENT_OPERATIONS.len(), 38);
+        assert!(include_str!("async_client.rs").contains("static_route_methods!"));
+        assert!(include_str!("async_client.rs").contains("dynamic_route_methods!"));
+        assert!(include_str!("blocking_client.rs").contains("static_route_methods!"));
+        assert!(include_str!("blocking_client.rs").contains("dynamic_route_methods!"));
     }
 }

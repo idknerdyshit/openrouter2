@@ -1,0 +1,610 @@
+macro_rules! static_route_methods {
+    ($get_auth:ident, $get_public:ident, $post_auth:ident) => {
+        $get_auth!(
+            get_user_activity,
+            get_user_activity_with_options,
+            "activity",
+            ActivityResponse
+        );
+        $get_auth!(
+            get_analytics_meta,
+            get_analytics_meta_with_options,
+            "analytics/meta",
+            AnalyticsMetaResponse
+        );
+        $post_auth!(
+            query_analytics,
+            query_analytics_with_options,
+            "analytics/query",
+            AnalyticsQueryRequest,
+            AnalyticsQueryResponse
+        );
+        $post_auth!(
+            create_audio_transcription,
+            create_audio_transcription_with_options,
+            "audio/transcriptions",
+            TranscriptionRequest,
+            TranscriptionResponse
+        );
+        $post_auth!(
+            create_auth_key_code,
+            create_auth_key_code_with_options,
+            "auth/keys/code",
+            AuthKeyCodeRequest,
+            AuthKeyCodeResponse
+        );
+        $get_public!(
+            list_benchmarks,
+            list_benchmarks_with_options,
+            "benchmarks",
+            BenchmarksResponse
+        );
+        $get_auth!(
+            list_byok_keys,
+            list_byok_keys_with_options,
+            "byok",
+            ByokListResponse
+        );
+        $post_auth!(
+            create_byok_key,
+            create_byok_key_with_options,
+            "byok",
+            ByokCreateRequest,
+            ByokCreateResponse
+        );
+        $get_public!(
+            get_task_classifications,
+            get_task_classifications_with_options,
+            "classifications/task",
+            TaskClassificationResponse
+        );
+        $get_auth!(
+            get_credits,
+            get_credits_with_options,
+            "credits",
+            CreditsResponse
+        );
+        $get_public!(
+            get_app_rankings,
+            get_app_rankings_with_options,
+            "datasets/app-rankings",
+            AppRankingsResponse
+        );
+        $get_public!(
+            get_rankings_daily,
+            get_rankings_daily_with_options,
+            "datasets/rankings-daily",
+            RankingsDailyResponse
+        );
+        $post_auth!(
+            create_embeddings,
+            create_embeddings_with_options,
+            "embeddings",
+            EmbeddingsRequest,
+            EmbeddingsResponse
+        );
+        $get_public!(
+            list_embedding_models,
+            list_embedding_models_with_options,
+            "embeddings/models",
+            EmbeddingModelsResponse
+        );
+        $get_public!(
+            list_zdr_endpoints,
+            list_zdr_endpoints_with_options,
+            "endpoints/zdr",
+            EndpointsZdrResponse
+        );
+        $get_auth!(
+            list_files,
+            list_files_with_options,
+            "files",
+            FileListResponse
+        );
+        $get_auth!(
+            list_guardrails,
+            list_guardrails_with_options,
+            "guardrails",
+            GuardrailListResponse
+        );
+        $post_auth!(
+            create_guardrail,
+            create_guardrail_with_options,
+            "guardrails",
+            GuardrailCreateRequest,
+            GuardrailCreateResponse
+        );
+        $get_auth!(
+            list_key_assignments,
+            list_key_assignments_with_options,
+            "guardrails/assignments/keys",
+            KeyAssignmentsResponse
+        );
+        $get_auth!(
+            list_member_assignments,
+            list_member_assignments_with_options,
+            "guardrails/assignments/members",
+            MemberAssignmentsResponse
+        );
+        $post_auth!(
+            create_image,
+            create_image_with_options,
+            "images",
+            ImageGenerationRequest,
+            ImageGenerationResponse
+        );
+        $get_public!(
+            list_image_models,
+            list_image_models_with_options,
+            "images/models",
+            ImageModelsResponse
+        );
+        $get_auth!(
+            get_current_key,
+            get_current_key_with_options,
+            "key",
+            CurrentKeyResponse
+        );
+        $get_auth!(list_keys, list_keys_with_options, "keys", KeyListResponse);
+        $post_auth!(
+            create_key,
+            create_key_with_options,
+            "keys",
+            KeyCreateRequest,
+            KeyCreateResponse
+        );
+        $get_public!(
+            list_models,
+            list_models_with_options,
+            "models",
+            ModelListResponse
+        );
+        $get_public!(
+            get_models_count,
+            get_models_count_with_options,
+            "models/count",
+            ModelCountResponse
+        );
+        $get_auth!(
+            list_user_models,
+            list_user_models_with_options,
+            "models/user",
+            UserModelsResponse
+        );
+        $get_auth!(
+            list_observability_destinations,
+            list_observability_destinations_with_options,
+            "observability/destinations",
+            ObservabilityDestinationListResponse
+        );
+        $post_auth!(
+            create_observability_destination,
+            create_observability_destination_with_options,
+            "observability/destinations",
+            ObservabilityDestinationCreateRequest,
+            ObservabilityDestinationCreateResponse
+        );
+        $get_auth!(
+            list_organization_members,
+            list_organization_members_with_options,
+            "organization/members",
+            OrganizationMembersResponse
+        );
+        $get_auth!(
+            list_presets,
+            list_presets_with_options,
+            "presets",
+            PresetListResponse
+        );
+        $get_public!(
+            list_providers,
+            list_providers_with_options,
+            "providers",
+            ProviderListResponse
+        );
+        $post_auth!(
+            create_rerank,
+            create_rerank_with_options,
+            "rerank",
+            RerankRequest,
+            RerankResponse
+        );
+        $post_auth!(
+            create_video,
+            create_video_with_options,
+            "videos",
+            VideoGenerationRequest,
+            VideoGenerationResponse
+        );
+        $get_public!(
+            list_video_models,
+            list_video_models_with_options,
+            "videos/models",
+            VideoModelsResponse
+        );
+        $get_auth!(
+            list_workspaces,
+            list_workspaces_with_options,
+            "workspaces",
+            WorkspaceListResponse
+        );
+        $post_auth!(
+            create_workspace,
+            create_workspace_with_options,
+            "workspaces",
+            WorkspaceCreateRequest,
+            WorkspaceCreateResponse
+        );
+    };
+}
+
+#[cfg(test)]
+macro_rules! static_route_operations {
+    () => {
+        [
+            "get_user_activity",
+            "get_analytics_meta",
+            "query_analytics",
+            "create_audio_transcription",
+            "create_auth_key_code",
+            "list_benchmarks",
+            "list_byok_keys",
+            "create_byok_key",
+            "get_task_classifications",
+            "get_credits",
+            "get_app_rankings",
+            "get_rankings_daily",
+            "create_embeddings",
+            "list_embedding_models",
+            "list_zdr_endpoints",
+            "list_files",
+            "list_guardrails",
+            "create_guardrail",
+            "list_key_assignments",
+            "list_member_assignments",
+            "create_image",
+            "list_image_models",
+            "get_current_key",
+            "list_keys",
+            "create_key",
+            "list_models",
+            "get_models_count",
+            "list_user_models",
+            "list_observability_destinations",
+            "create_observability_destination",
+            "list_organization_members",
+            "list_presets",
+            "list_providers",
+            "create_rerank",
+            "create_video",
+            "list_video_models",
+            "list_workspaces",
+            "create_workspace",
+        ]
+    };
+}
+
+macro_rules! dynamic_route_methods {
+    ($get_auth:ident, $get_public:ident, $delete_auth:ident, $patch_auth:ident, $put_auth:ident, $post_auth:ident) => {
+        $get_auth!(
+            get_byok_key,
+            get_byok_key_with_options,
+            ByokResponse,
+            |id: &str| format!("byok/{}", path_segment(id))
+        );
+        $delete_auth!(
+            delete_byok_key,
+            delete_byok_key_with_options,
+            ByokDeleteResponse,
+            |id: &str| format!("byok/{}", path_segment(id))
+        );
+        $patch_auth!(
+            update_byok_key,
+            update_byok_key_with_options,
+            ByokUpdateRequest,
+            ByokUpdateResponse,
+            |id: &str| format!("byok/{}", path_segment(id))
+        );
+        $get_auth!(
+            get_file_metadata,
+            get_file_metadata_with_options,
+            FileMetadataResponse,
+            |file_id: &str| format!("files/{}", path_segment(file_id))
+        );
+        $delete_auth!(
+            delete_file,
+            delete_file_with_options,
+            FileDeleteResponse,
+            |file_id: &str| format!("files/{}", path_segment(file_id))
+        );
+        $get_auth!(
+            get_guardrail,
+            get_guardrail_with_options,
+            GuardrailResponse,
+            |id: &str| format!("guardrails/{}", path_segment(id))
+        );
+        $delete_auth!(
+            delete_guardrail,
+            delete_guardrail_with_options,
+            GuardrailDeleteResponse,
+            |id: &str| format!("guardrails/{}", path_segment(id))
+        );
+        $patch_auth!(
+            update_guardrail,
+            update_guardrail_with_options,
+            GuardrailUpdateRequest,
+            GuardrailUpdateResponse,
+            |id: &str| format!("guardrails/{}", path_segment(id))
+        );
+        $get_auth!(
+            list_guardrail_key_assignments,
+            list_guardrail_key_assignments_with_options,
+            KeyAssignmentsResponse,
+            |id: &str| format!("guardrails/{}/assignments/keys", path_segment(id))
+        );
+        $post_auth!(
+            bulk_assign_keys_to_guardrail,
+            bulk_assign_keys_to_guardrail_with_options,
+            BulkAssignKeysRequest,
+            BulkAssignKeysResponse,
+            |id: &str| format!("guardrails/{}/assignments/keys", path_segment(id))
+        );
+        $post_auth!(
+            bulk_unassign_keys_from_guardrail,
+            bulk_unassign_keys_from_guardrail_with_options,
+            BulkUnassignKeysRequest,
+            BulkUnassignKeysResponse,
+            |id: &str| format!("guardrails/{}/assignments/keys/remove", path_segment(id))
+        );
+        $get_auth!(
+            list_guardrail_member_assignments,
+            list_guardrail_member_assignments_with_options,
+            MemberAssignmentsResponse,
+            |id: &str| format!("guardrails/{}/assignments/members", path_segment(id))
+        );
+        $post_auth!(
+            bulk_assign_members_to_guardrail,
+            bulk_assign_members_to_guardrail_with_options,
+            BulkAssignMembersRequest,
+            BulkAssignMembersResponse,
+            |id: &str| format!("guardrails/{}/assignments/members", path_segment(id))
+        );
+        $post_auth!(
+            bulk_unassign_members_from_guardrail,
+            bulk_unassign_members_from_guardrail_with_options,
+            BulkUnassignMembersRequest,
+            BulkUnassignMembersResponse,
+            |id: &str| format!("guardrails/{}/assignments/members/remove", path_segment(id))
+        );
+        $get_public!(
+            list_image_model_endpoints,
+            list_image_model_endpoints_with_options,
+            ImageModelEndpointsResponse,
+            |author: &str, slug: &str| format!(
+                "images/models/{}/{}/endpoints",
+                path_segment(author),
+                path_segment(slug)
+            )
+        );
+        $get_auth!(
+            get_key,
+            get_key_with_options,
+            KeyResponse,
+            |hash: &str| format!("keys/{}", path_segment(hash))
+        );
+        $delete_auth!(
+            delete_key,
+            delete_key_with_options,
+            KeyDeleteResponse,
+            |hash: &str| format!("keys/{}", path_segment(hash))
+        );
+        $patch_auth!(
+            update_key,
+            update_key_with_options,
+            KeyUpdateRequest,
+            KeyUpdateResponse,
+            |hash: &str| format!("keys/{}", path_segment(hash))
+        );
+        $get_public!(
+            get_model,
+            get_model_with_options,
+            ModelResponse,
+            |author: &str, slug: &str| format!(
+                "model/{}/{}",
+                path_segment(author),
+                path_segment(slug)
+            )
+        );
+        $get_public!(
+            list_model_endpoints,
+            list_model_endpoints_with_options,
+            ModelEndpointsResponse,
+            |author: &str, slug: &str| format!(
+                "models/{}/{}/endpoints",
+                path_segment(author),
+                path_segment(slug)
+            )
+        );
+        $get_auth!(
+            get_observability_destination,
+            get_observability_destination_with_options,
+            ObservabilityDestinationResponse,
+            |id: &str| format!("observability/destinations/{}", path_segment(id))
+        );
+        $delete_auth!(
+            delete_observability_destination,
+            delete_observability_destination_with_options,
+            ObservabilityDestinationDeleteResponse,
+            |id: &str| format!("observability/destinations/{}", path_segment(id))
+        );
+        $patch_auth!(
+            update_observability_destination,
+            update_observability_destination_with_options,
+            ObservabilityDestinationUpdateRequest,
+            ObservabilityDestinationUpdateResponse,
+            |id: &str| format!("observability/destinations/{}", path_segment(id))
+        );
+        $get_auth!(
+            get_preset,
+            get_preset_with_options,
+            PresetResponse,
+            |slug: &str| format!("presets/{}", path_segment(slug))
+        );
+        $post_auth!(
+            create_preset_from_chat_completion,
+            create_preset_from_chat_completion_with_options,
+            ChatCompletionRequest,
+            PresetCreateFromInferenceResponse,
+            |slug: &str| format!("presets/{}/chat/completions", path_segment(slug))
+        );
+        $post_auth!(
+            create_preset_from_message,
+            create_preset_from_message_with_options,
+            MessagesRequest,
+            PresetCreateFromInferenceResponse,
+            |slug: &str| format!("presets/{}/messages", path_segment(slug))
+        );
+        $post_auth!(
+            create_preset_from_response,
+            create_preset_from_response_with_options,
+            ResponsesRequest,
+            PresetCreateFromInferenceResponse,
+            |slug: &str| format!("presets/{}/responses", path_segment(slug))
+        );
+        $get_auth!(
+            list_preset_versions,
+            list_preset_versions_with_options,
+            PresetVersionListResponse,
+            |slug: &str| format!("presets/{}/versions", path_segment(slug))
+        );
+        $get_auth!(
+            get_preset_version,
+            get_preset_version_with_options,
+            PresetVersionResponse,
+            |slug: &str, version: &str| format!(
+                "presets/{}/versions/{}",
+                path_segment(slug),
+                path_segment(version)
+            )
+        );
+        $get_auth!(
+            get_video,
+            get_video_with_options,
+            VideoStatusResponse,
+            |job_id: &str| format!("videos/{}", path_segment(job_id))
+        );
+        $get_auth!(
+            get_workspace,
+            get_workspace_with_options,
+            WorkspaceResponse,
+            |id: &str| format!("workspaces/{}", path_segment(id))
+        );
+        $delete_auth!(
+            delete_workspace,
+            delete_workspace_with_options,
+            WorkspaceDeleteResponse,
+            |id: &str| format!("workspaces/{}", path_segment(id))
+        );
+        $patch_auth!(
+            update_workspace,
+            update_workspace_with_options,
+            WorkspaceUpdateRequest,
+            WorkspaceUpdateResponse,
+            |id: &str| format!("workspaces/{}", path_segment(id))
+        );
+        $get_auth!(
+            list_workspace_budgets,
+            list_workspace_budgets_with_options,
+            WorkspaceBudgetListResponse,
+            |id: &str| format!("workspaces/{}/budgets", path_segment(id))
+        );
+        $delete_auth!(
+            delete_workspace_budget,
+            delete_workspace_budget_with_options,
+            WorkspaceBudgetDeleteResponse,
+            |id: &str, interval: &str| format!(
+                "workspaces/{}/budgets/{}",
+                path_segment(id),
+                path_segment(interval)
+            )
+        );
+        $put_auth!(
+            upsert_workspace_budget,
+            upsert_workspace_budget_with_options,
+            WorkspaceBudgetUpsertRequest,
+            WorkspaceBudgetUpsertResponse,
+            |id: &str, interval: &str| format!(
+                "workspaces/{}/budgets/{}",
+                path_segment(id),
+                path_segment(interval)
+            )
+        );
+        $post_auth!(
+            bulk_add_workspace_members,
+            bulk_add_workspace_members_with_options,
+            BulkAddWorkspaceMembersRequest,
+            BulkAddWorkspaceMembersResponse,
+            |id: &str| format!("workspaces/{}/members/add", path_segment(id))
+        );
+        $post_auth!(
+            bulk_remove_workspace_members,
+            bulk_remove_workspace_members_with_options,
+            BulkRemoveWorkspaceMembersRequest,
+            BulkRemoveWorkspaceMembersResponse,
+            |id: &str| format!("workspaces/{}/members/remove", path_segment(id))
+        );
+    };
+}
+
+#[cfg(test)]
+macro_rules! dynamic_route_operations {
+    () => {
+        [
+            "get_byok_key",
+            "delete_byok_key",
+            "update_byok_key",
+            "get_file_metadata",
+            "delete_file",
+            "get_guardrail",
+            "delete_guardrail",
+            "update_guardrail",
+            "list_guardrail_key_assignments",
+            "bulk_assign_keys_to_guardrail",
+            "bulk_unassign_keys_from_guardrail",
+            "list_guardrail_member_assignments",
+            "bulk_assign_members_to_guardrail",
+            "bulk_unassign_members_from_guardrail",
+            "list_image_model_endpoints",
+            "get_key",
+            "delete_key",
+            "update_key",
+            "get_model",
+            "list_model_endpoints",
+            "get_observability_destination",
+            "delete_observability_destination",
+            "update_observability_destination",
+            "get_preset",
+            "create_preset_from_chat_completion",
+            "create_preset_from_message",
+            "create_preset_from_response",
+            "list_preset_versions",
+            "get_preset_version",
+            "get_video",
+            "get_workspace",
+            "delete_workspace",
+            "update_workspace",
+            "list_workspace_budgets",
+            "delete_workspace_budget",
+            "upsert_workspace_budget",
+            "bulk_add_workspace_members",
+            "bulk_remove_workspace_members",
+        ]
+    };
+}
+
+pub(crate) use dynamic_route_methods;
+#[cfg(test)]
+pub(crate) use dynamic_route_operations;
+pub(crate) use static_route_methods;
+#[cfg(test)]
+pub(crate) use static_route_operations;

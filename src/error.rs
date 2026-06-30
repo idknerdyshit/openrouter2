@@ -97,7 +97,7 @@ pub(crate) fn parse_api_error(
         error,
         request_id: header_value(headers, "x-request-id")
             .or_else(|| header_value(headers, "openrouter-request-id")),
-        headers: stringify_headers(headers),
+        headers: safe_headers(headers),
     }))
 }
 
@@ -108,15 +108,27 @@ fn header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Stri
         .map(|value| redact_header_value(name, value))
 }
 
-fn stringify_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
+fn safe_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
     headers
         .iter()
         .filter_map(|(name, value)| {
             let name = name.to_string();
+            if !is_safe_error_header(&name) {
+                return None;
+            }
             let value = redact_header_value(&name, value.to_str().ok()?);
             Some((name, value))
         })
         .collect()
+}
+
+fn is_safe_error_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "content-type" | "openrouter-request-id" | "retry-after" | "x-request-id"
+    ) || name.starts_with("ratelimit-")
+        || name.starts_with("x-ratelimit-")
 }
 
 #[cfg(test)]
@@ -153,6 +165,11 @@ mod tests {
             "x-request-id",
             HeaderValue::from_static("req-sk-test-secret"),
         );
+        headers.insert(
+            "location",
+            HeaderValue::from_static("https://example.test/sk-leak"),
+        );
+        headers.insert("retry-after", HeaderValue::from_static("3"));
 
         let err = parse_api_error(
             StatusCode::UNAUTHORIZED,
@@ -166,13 +183,12 @@ mod tests {
         };
 
         assert_eq!(api.request_id.as_deref(), Some("req-[REDACTED]"));
+        assert_eq!(api.headers.get("authorization").map(String::as_str), None);
+        assert_eq!(api.headers.get("set-cookie").map(String::as_str), None);
+        assert_eq!(api.headers.get("location").map(String::as_str), None);
         assert_eq!(
-            api.headers.get("authorization").map(String::as_str),
-            Some("[REDACTED]")
-        );
-        assert_eq!(
-            api.headers.get("set-cookie").map(String::as_str),
-            Some("[REDACTED]")
+            api.headers.get("retry-after").map(String::as_str),
+            Some("3")
         );
         assert!(!api.body.contains("sk-test-secret"));
         assert!(!api.body.contains("sk-other-secret"));

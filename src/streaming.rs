@@ -169,14 +169,16 @@ where
         return Ok(Some(SseMessage::Done));
     }
 
-    let value: Value =
-        serde_json::from_str(&data).map_err(|e| OpenRouterError::Decode(e.to_string()))?;
-    match serde_json::from_value::<T>(value.clone()) {
+    match serde_json::from_str::<T>(&data) {
         Ok(parsed) => Ok(Some(SseMessage::Data(parsed))),
-        Err(_) => Ok(Some(SseMessage::Raw {
-            event: event_name,
-            data: value,
-        })),
+        Err(_) => {
+            let data =
+                serde_json::from_str(&data).map_err(|e| OpenRouterError::Decode(e.to_string()))?;
+            Ok(Some(SseMessage::Raw {
+                event: event_name,
+                data,
+            }))
+        }
     }
 }
 

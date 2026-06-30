@@ -142,6 +142,7 @@ pub(crate) fn redact_url(url: &Url) -> String {
             .clear()
             .extend_pairs(keys.iter().map(|key| (key.as_str(), REDACTED)));
     }
+    redacted.set_fragment(None);
 
     redacted.to_string()
 }
@@ -310,6 +311,7 @@ fn is_template_param(segment: &str) -> bool {
 }
 
 fn redact_path(path: &str) -> String {
+    let path = path.split_once('#').map_or(path, |(path, _)| path);
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
     let path = redact_secret_patterns(path);
     if query.is_empty() {
@@ -374,7 +376,7 @@ mod tests {
     fn trace_redacts_unknown_path_and_query_values() {
         let trace = RequestTrace::start(
             HttpMethod::Get,
-            "custom/sk-test-secret?api_key=sk-query-secret&model=openai",
+            "custom/sk-test-secret?api_key=sk-query-secret&model=openai#fragment-sk-secret",
             &[],
             true,
         );
@@ -384,6 +386,7 @@ mod tests {
         );
         assert!(!trace.route.contains("sk-test-secret"));
         assert!(!trace.route.contains("sk-query-secret"));
+        assert!(!trace.route.contains("fragment-sk-secret"));
     }
 
     #[test]
@@ -412,7 +415,8 @@ mod tests {
     #[test]
     fn redacts_url_credentials_and_query_values() {
         let url =
-            Url::parse("https://user:pass@example.test/path?api_key=sk-secret&id=gen-123").unwrap();
+            Url::parse("https://user:pass@example.test/path?api_key=sk-secret&id=gen-123#secret")
+                .unwrap();
         let redacted = redact_url(&url);
         assert_eq!(
             redacted,

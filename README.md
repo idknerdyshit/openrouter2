@@ -1,6 +1,6 @@
 # openrouter2
 
-`openrouter2` is a typed Rust client for the OpenRouter API. Version `0.2`
+`openrouter2` is a typed Rust client for the OpenRouter API. Version `0.3`
 targets the full current non-deprecated route set from the OpenRouter OpenAPI
 spec snapshot dated `2026-06-28`.
 
@@ -11,21 +11,22 @@ call; the client stores only the injected HTTP client and normalized base URL.
 
 ```toml
 [dependencies]
-openrouter2 = "0.2"
+openrouter2 = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Async support is enabled by default. For a blocking client:
+Async support is enabled by default. To enable the blocking client in addition
+to the default async client:
 
 ```toml
-openrouter2 = { version = "0.2", features = ["blocking"] }
+openrouter2 = { version = "0.3", features = ["blocking"] }
 ```
 
-For blocking-only builds:
+To build with only the blocking client:
 
 ```toml
-openrouter2 = { version = "0.2", default-features = false, features = ["blocking"] }
+openrouter2 = { version = "0.3", default-features = false, features = ["blocking"] }
 ```
 
 ## Async Usage
@@ -91,6 +92,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Raw JSON, binary, and multipart escape hatches for new API fields/routes.
 - `RequestOptions` for per-call headers such as `HTTP-Referer`, `X-Title`,
   `X-Session-Id`, and custom headers.
+
+`try_new` accepts HTTPS OpenRouter base URLs. Local test servers and trusted
+proxies must opt in explicitly with `try_new_unchecked_base_url`.
 
 ## Observability
 
