@@ -15,9 +15,11 @@
 //! default through `AsyncOpenRouterClient`. Enable the `blocking` Cargo feature
 //! for `BlockingOpenRouterClient`.
 //!
-//! API keys are always passed per call. Client values only store the injected
-//! HTTP client and normalized base URL.
+//! Client values can store an optional default `ApiKey` alongside the injected
+//! HTTP client and normalized base URL. Per-call `RequestOptions` can override
+//! that key or explicitly suppress authentication for no-auth routes.
 
+mod auth;
 mod client_routes;
 mod error;
 mod observability;
@@ -36,13 +38,15 @@ pub mod streaming;
 
 #[cfg(feature = "async")]
 pub use async_client::AsyncOpenRouterClient;
+pub use auth::ApiKey;
 #[cfg(feature = "blocking")]
 pub use blocking_client::BlockingOpenRouterClient;
 pub use error::{ApiError, OpenRouterApiError, OpenRouterError};
-pub use options::RequestOptions;
+pub use options::{RequestAuth, RequestOptions};
 pub use routes::{HttpMethod, MultipartFile, RawJsonRequest, RawMultipartRequest};
 pub use spec::{NON_DEPRECATED_ROUTES, RouteSpec, SPEC_SNAPSHOT_DATE};
 pub use transport::{
-    DEFAULT_BASE_URL, endpoint_url_from_base, normalize_base_url, normalize_unchecked_base_url,
+    DEFAULT_BASE_URL, IntoQueryParams, endpoint_url_from_base, normalize_base_url,
+    normalize_unchecked_base_url,
 };
 pub use types::*;

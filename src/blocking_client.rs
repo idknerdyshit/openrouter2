@@ -3,21 +3,23 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::auth::AuthRequirement;
 use crate::client_routes::{dynamic_route_methods, static_route_methods};
 use crate::error::{parse_api_error, reqwest_error_message};
 use crate::observability::RequestTrace;
 use crate::routes::{HttpMethod, MultipartFile, RawJsonRequest, RawMultipartRequest};
 use crate::streaming::BlockingSseStream;
 use crate::transport::{
-    QueryParams, endpoint_url_from_base, normalize_base_url, normalize_unchecked_base_url,
-    path_segment, with_query,
+    endpoint_url_from_base, normalize_base_url, normalize_unchecked_base_url, path_segment,
+    with_query,
 };
 use crate::types::*;
-use crate::{OpenRouterError, RequestOptions};
+use crate::{ApiKey, OpenRouterError, RequestAuth, RequestOptions};
 
 pub struct BlockingOpenRouterClient {
     http: reqwest::blocking::Client,
     base_url: Url,
+    api_key: Option<ApiKey>,
 }
 
 impl BlockingOpenRouterClient {
@@ -29,23 +31,57 @@ impl BlockingOpenRouterClient {
         http: reqwest::blocking::Client,
         base_url: impl Into<String>,
     ) -> Result<Self, OpenRouterError> {
-        Self::from_normalized_base_url(http, normalize_base_url(base_url.into()))
+        Self::from_normalized_base_url(http, normalize_base_url(base_url.into()), None)
+    }
+
+    pub fn new_with_api_key(
+        http: reqwest::blocking::Client,
+        base_url: impl Into<String>,
+        api_key: impl Into<ApiKey>,
+    ) -> Self {
+        Self::try_new_with_api_key(http, base_url, api_key).expect("invalid OpenRouter base URL")
+    }
+
+    pub fn try_new_with_api_key(
+        http: reqwest::blocking::Client,
+        base_url: impl Into<String>,
+        api_key: impl Into<ApiKey>,
+    ) -> Result<Self, OpenRouterError> {
+        Self::from_normalized_base_url(
+            http,
+            normalize_base_url(base_url.into()),
+            Some(api_key.into()),
+        )
     }
 
     pub fn try_new_unchecked_base_url(
         http: reqwest::blocking::Client,
         base_url: impl Into<String>,
     ) -> Result<Self, OpenRouterError> {
-        Self::from_normalized_base_url(http, normalize_unchecked_base_url(base_url.into()))
+        Self::from_normalized_base_url(http, normalize_unchecked_base_url(base_url.into()), None)
+    }
+
+    pub fn try_new_unchecked_base_url_with_api_key(
+        http: reqwest::blocking::Client,
+        base_url: impl Into<String>,
+        api_key: impl Into<ApiKey>,
+    ) -> Result<Self, OpenRouterError> {
+        Self::from_normalized_base_url(
+            http,
+            normalize_unchecked_base_url(base_url.into()),
+            Some(api_key.into()),
+        )
     }
 
     fn from_normalized_base_url(
         http: reqwest::blocking::Client,
         base_url: Result<Url, String>,
+        api_key: Option<ApiKey>,
     ) -> Result<Self, OpenRouterError> {
         Ok(Self {
             http,
             base_url: base_url.map_err(OpenRouterError::InvalidBaseUrl)?,
+            api_key,
         })
     }
 
@@ -57,45 +93,47 @@ impl BlockingOpenRouterClient {
         &self.base_url
     }
 
-    pub fn raw_json(
-        &self,
-        api_key: Option<&str>,
-        request: RawJsonRequest,
-    ) -> Result<Value, OpenRouterError> {
+    pub fn api_key(&self) -> Option<&ApiKey> {
+        self.api_key.as_ref()
+    }
+
+    pub fn with_api_key(mut self, api_key: impl Into<ApiKey>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
+
+    pub fn without_api_key(mut self) -> Self {
+        self.api_key = None;
+        self
+    }
+
+    pub fn raw_json(&self, request: RawJsonRequest) -> Result<Value, OpenRouterError> {
         self.request_json_value(
             request.method,
             &request.path,
-            api_key,
+            AuthRequirement::Default,
             &request.query,
             request.body.as_ref(),
             &request.options,
         )
     }
 
-    pub fn raw_binary(
-        &self,
-        api_key: Option<&str>,
-        request: RawJsonRequest,
-    ) -> Result<BinaryResponse, OpenRouterError> {
+    pub fn raw_binary(&self, request: RawJsonRequest) -> Result<BinaryResponse, OpenRouterError> {
         self.request_binary(
             request.method,
             &request.path,
-            api_key,
+            AuthRequirement::Default,
             &request.query,
             request.body.as_ref(),
             &request.options,
         )
     }
 
-    pub fn raw_multipart(
-        &self,
-        api_key: Option<&str>,
-        request: RawMultipartRequest,
-    ) -> Result<Value, OpenRouterError> {
+    pub fn raw_multipart(&self, request: RawMultipartRequest) -> Result<Value, OpenRouterError> {
         self.request_multipart_value(
             request.method,
             &request.path,
-            api_key,
+            AuthRequirement::Default,
             &request.query,
             request.files,
             request.fields,
@@ -107,28 +145,53 @@ impl BlockingOpenRouterClient {
         &self,
         method: HttpMethod,
         path: &str,
-        api_key: Option<&str>,
+        auth: AuthRequirement,
         query: &[(String, String)],
         options: &RequestOptions,
-    ) -> Result<reqwest::blocking::RequestBuilder, OpenRouterError> {
+    ) -> Result<(reqwest::blocking::RequestBuilder, bool), OpenRouterError> {
         let url = with_query(endpoint_url_from_base(&self.base_url, path)?, query);
         let mut builder = self.http.request(method.into(), url);
+        let api_key = self.resolve_api_key(auth, options)?;
         if let Some(api_key) = api_key {
             builder = builder.bearer_auth(api_key);
         }
-        options.apply_blocking(builder)
+        Ok((options.apply_blocking(builder)?, api_key.is_some()))
+    }
+
+    fn resolve_api_key<'a>(
+        &'a self,
+        auth: AuthRequirement,
+        options: &'a RequestOptions,
+    ) -> Result<Option<&'a str>, OpenRouterError> {
+        match &options.auth {
+            RequestAuth::ApiKey(api_key) => Ok(Some(api_key.expose_secret())),
+            RequestAuth::NoAuth => match auth {
+                AuthRequirement::Required => Err(OpenRouterError::MissingApiKey),
+                AuthRequirement::Optional | AuthRequirement::Default => Ok(None),
+            },
+            RequestAuth::Default => match auth {
+                AuthRequirement::Required => self
+                    .api_key
+                    .as_ref()
+                    .map(ApiKey::expose_secret)
+                    .ok_or(OpenRouterError::MissingApiKey)
+                    .map(Some),
+                AuthRequirement::Optional => Ok(None),
+                AuthRequirement::Default => Ok(self.api_key.as_ref().map(ApiKey::expose_secret)),
+            },
+        }
     }
 
     fn request_json_no_body<T: DeserializeOwned>(
         &self,
         method: HttpMethod,
         path: &str,
-        api_key: Option<&str>,
+        auth: AuthRequirement,
         query: &[(String, String)],
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
-        let builder = self.request_builder(method, path, api_key, query, options)?;
-        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let (builder, authenticated) = self.request_builder(method, path, auth, query, options)?;
+        let trace = RequestTrace::start(method, path, query, authenticated);
         let resp = match builder.send() {
             Ok(resp) => resp,
             Err(e) => {
@@ -144,15 +207,14 @@ impl BlockingOpenRouterClient {
         &self,
         method: HttpMethod,
         path: &str,
-        api_key: Option<&str>,
+        auth: AuthRequirement,
         query: &[(String, String)],
         body: &B,
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
-        let builder = self
-            .request_builder(method, path, api_key, query, options)?
-            .json(body);
-        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let (builder, authenticated) = self.request_builder(method, path, auth, query, options)?;
+        let builder = builder.json(body);
+        let trace = RequestTrace::start(method, path, query, authenticated);
         let resp = match builder.send() {
             Ok(resp) => resp,
             Err(e) => {
@@ -168,14 +230,14 @@ impl BlockingOpenRouterClient {
         &self,
         method: HttpMethod,
         path: &str,
-        api_key: Option<&str>,
+        auth: AuthRequirement,
         query: &[(String, String)],
         body: Option<&Value>,
         options: &RequestOptions,
     ) -> Result<Value, OpenRouterError> {
         match body {
-            Some(body) => self.request_json_body(method, path, api_key, query, body, options),
-            None => self.request_json_no_body(method, path, api_key, query, options),
+            Some(body) => self.request_json_body(method, path, auth, query, body, options),
+            None => self.request_json_no_body(method, path, auth, query, options),
         }
     }
 
@@ -183,16 +245,17 @@ impl BlockingOpenRouterClient {
         &self,
         method: HttpMethod,
         path: &str,
-        api_key: Option<&str>,
+        auth: AuthRequirement,
         query: &[(String, String)],
         body: Option<&Value>,
         options: &RequestOptions,
     ) -> Result<BinaryResponse, OpenRouterError> {
-        let mut builder = self.request_builder(method, path, api_key, query, options)?;
+        let (mut builder, authenticated) =
+            self.request_builder(method, path, auth, query, options)?;
         if let Some(body) = body {
             builder = builder.json(body);
         }
-        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let trace = RequestTrace::start(method, path, query, authenticated);
         let resp = match builder.send() {
             Ok(resp) => resp,
             Err(e) => {
@@ -212,17 +275,16 @@ impl BlockingOpenRouterClient {
         &self,
         method: HttpMethod,
         path: &str,
-        api_key: Option<&str>,
+        auth: AuthRequirement,
         query: &[(String, String)],
         files: Vec<MultipartFile>,
         fields: Vec<(String, String)>,
         options: &RequestOptions,
     ) -> Result<Value, OpenRouterError> {
         let form = multipart_form(files, fields)?;
-        let builder = self
-            .request_builder(method, path, api_key, query, options)?
-            .multipart(form);
-        let trace = RequestTrace::start(method, path, query, api_key.is_some());
+        let (builder, authenticated) = self.request_builder(method, path, auth, query, options)?;
+        let builder = builder.multipart(form);
+        let trace = RequestTrace::start(method, path, query, authenticated);
         let resp = match builder.send() {
             Ok(resp) => resp,
             Err(e) => {
@@ -237,14 +299,14 @@ impl BlockingOpenRouterClient {
     fn stream_json_body<B: Serialize + ?Sized, T: DeserializeOwned>(
         &self,
         path: &str,
-        api_key: &str,
+        auth: AuthRequirement,
         body: &B,
         options: &RequestOptions,
     ) -> Result<BlockingSseStream<T>, OpenRouterError> {
-        let builder = self
-            .request_builder(HttpMethod::Post, path, Some(api_key), &[], options)?
-            .json(body);
-        let trace = RequestTrace::start(HttpMethod::Post, path, &[], true);
+        let (builder, authenticated) =
+            self.request_builder(HttpMethod::Post, path, auth, &[], options)?;
+        let builder = builder.json(body);
+        let trace = RequestTrace::start(HttpMethod::Post, path, &[], authenticated);
         let resp = match builder.send() {
             Ok(resp) => resp,
             Err(e) => {
@@ -264,22 +326,20 @@ impl BlockingOpenRouterClient {
 
     pub fn create_chat_completion(
         &self,
-        api_key: &str,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, OpenRouterError> {
-        self.create_chat_completion_with_options(api_key, request, RequestOptions::default())
+        self.create_chat_completion_with_options(request, RequestOptions::default())
     }
 
     pub fn create_chat_completion_with_options(
         &self,
-        api_key: &str,
         request: ChatCompletionRequest,
         options: RequestOptions,
     ) -> Result<ChatCompletionResponse, OpenRouterError> {
         self.request_json_body(
             HttpMethod::Post,
             "chat/completions",
-            Some(api_key),
+            AuthRequirement::Required,
             &[],
             &request,
             &options,
@@ -288,41 +348,42 @@ impl BlockingOpenRouterClient {
 
     pub fn stream_chat_completion(
         &self,
-        api_key: &str,
         mut request: ChatCompletionRequest,
     ) -> Result<BlockingSseStream<ChatStreamChunk>, OpenRouterError> {
         request.stream = Some(true);
-        self.stream_chat_completion_with_options(api_key, request, RequestOptions::default())
+        self.stream_chat_completion_with_options(request, RequestOptions::default())
     }
 
     pub fn stream_chat_completion_with_options(
         &self,
-        api_key: &str,
         mut request: ChatCompletionRequest,
         options: RequestOptions,
     ) -> Result<BlockingSseStream<ChatStreamChunk>, OpenRouterError> {
         request.stream = Some(true);
-        self.stream_json_body("chat/completions", api_key, &request, &options)
+        self.stream_json_body(
+            "chat/completions",
+            AuthRequirement::Required,
+            &request,
+            &options,
+        )
     }
 
     pub fn create_response(
         &self,
-        api_key: &str,
         request: ResponsesRequest,
     ) -> Result<ResponsesResponse, OpenRouterError> {
-        self.create_response_with_options(api_key, request, RequestOptions::default())
+        self.create_response_with_options(request, RequestOptions::default())
     }
 
     pub fn create_response_with_options(
         &self,
-        api_key: &str,
         request: ResponsesRequest,
         options: RequestOptions,
     ) -> Result<ResponsesResponse, OpenRouterError> {
         self.request_json_body(
             HttpMethod::Post,
             "responses",
-            Some(api_key),
+            AuthRequirement::Required,
             &[],
             &request,
             &options,
@@ -331,41 +392,37 @@ impl BlockingOpenRouterClient {
 
     pub fn stream_response(
         &self,
-        api_key: &str,
         mut request: ResponsesRequest,
     ) -> Result<BlockingSseStream<StreamedResponsesEvent>, OpenRouterError> {
         request.stream = Some(true);
-        self.stream_response_with_options(api_key, request, RequestOptions::default())
+        self.stream_response_with_options(request, RequestOptions::default())
     }
 
     pub fn stream_response_with_options(
         &self,
-        api_key: &str,
         mut request: ResponsesRequest,
         options: RequestOptions,
     ) -> Result<BlockingSseStream<StreamedResponsesEvent>, OpenRouterError> {
         request.stream = Some(true);
-        self.stream_json_body("responses", api_key, &request, &options)
+        self.stream_json_body("responses", AuthRequirement::Required, &request, &options)
     }
 
     pub fn create_message(
         &self,
-        api_key: &str,
         request: MessagesRequest,
     ) -> Result<MessagesResponse, OpenRouterError> {
-        self.create_message_with_options(api_key, request, RequestOptions::default())
+        self.create_message_with_options(request, RequestOptions::default())
     }
 
     pub fn create_message_with_options(
         &self,
-        api_key: &str,
         request: MessagesRequest,
         options: RequestOptions,
     ) -> Result<MessagesResponse, OpenRouterError> {
         self.request_json_body(
             HttpMethod::Post,
             "messages",
-            Some(api_key),
+            AuthRequirement::Required,
             &[],
             &request,
             &options,
@@ -374,29 +431,23 @@ impl BlockingOpenRouterClient {
 
     pub fn stream_message(
         &self,
-        api_key: &str,
         mut request: MessagesRequest,
     ) -> Result<BlockingSseStream<MessagesStreamEvent>, OpenRouterError> {
         request.stream = Some(true);
-        self.stream_message_with_options(api_key, request, RequestOptions::default())
+        self.stream_message_with_options(request, RequestOptions::default())
     }
 
     pub fn stream_message_with_options(
         &self,
-        api_key: &str,
         mut request: MessagesRequest,
         options: RequestOptions,
     ) -> Result<BlockingSseStream<MessagesStreamEvent>, OpenRouterError> {
         request.stream = Some(true);
-        self.stream_json_body("messages", api_key, &request, &options)
+        self.stream_json_body("messages", AuthRequirement::Required, &request, &options)
     }
 
-    pub fn generation_cost(
-        &self,
-        api_key: &str,
-        generation_id: &str,
-    ) -> Result<Option<f64>, OpenRouterError> {
-        match self.get_generation(api_key, generation_id) {
+    pub fn generation_cost(&self, generation_id: &str) -> Result<Option<f64>, OpenRouterError> {
+        match self.get_generation(generation_id) {
             Ok(generation) => Ok(generation.total_cost()),
             Err(err) if is_not_found(&err) => Ok(None),
             Err(err) => Err(err),
@@ -406,53 +457,71 @@ impl BlockingOpenRouterClient {
 
 macro_rules! blocking_get_public {
     ($name:ident, $with:ident, $path:literal, $resp:ty) => {
-        pub fn $name(&self, query: QueryParams) -> Result<$resp, OpenRouterError> {
+        pub fn $name<Q: crate::transport::IntoQueryParams>(
+            &self,
+            query: Q,
+        ) -> Result<$resp, OpenRouterError> {
             self.$with(query, RequestOptions::default())
         }
 
-        pub fn $with(
+        pub fn $with<Q: crate::transport::IntoQueryParams>(
             &self,
-            query: QueryParams,
+            query: Q,
             options: RequestOptions,
         ) -> Result<$resp, OpenRouterError> {
-            self.request_json_no_body(HttpMethod::Get, $path, None, &query, &options)
+            let query = query.into_query_params();
+            self.request_json_no_body(
+                HttpMethod::Get,
+                $path,
+                AuthRequirement::Optional,
+                &query,
+                &options,
+            )
         }
     };
 }
 
 macro_rules! blocking_get_auth {
     ($name:ident, $with:ident, $path:literal, $resp:ty) => {
-        pub fn $name(&self, api_key: &str, query: QueryParams) -> Result<$resp, OpenRouterError> {
-            self.$with(api_key, query, RequestOptions::default())
+        pub fn $name<Q: crate::transport::IntoQueryParams>(
+            &self,
+            query: Q,
+        ) -> Result<$resp, OpenRouterError> {
+            self.$with(query, RequestOptions::default())
         }
 
-        pub fn $with(
+        pub fn $with<Q: crate::transport::IntoQueryParams>(
             &self,
-            api_key: &str,
-            query: QueryParams,
+            query: Q,
             options: RequestOptions,
         ) -> Result<$resp, OpenRouterError> {
-            self.request_json_no_body(HttpMethod::Get, $path, Some(api_key), &query, &options)
+            let query = query.into_query_params();
+            self.request_json_no_body(
+                HttpMethod::Get,
+                $path,
+                AuthRequirement::Required,
+                &query,
+                &options,
+            )
         }
     };
 }
 
 macro_rules! blocking_post_auth {
     ($name:ident, $with:ident, $path:literal, $req:ty, $resp:ty) => {
-        pub fn $name(&self, api_key: &str, request: $req) -> Result<$resp, OpenRouterError> {
-            self.$with(api_key, request, RequestOptions::default())
+        pub fn $name(&self, request: $req) -> Result<$resp, OpenRouterError> {
+            self.$with(request, RequestOptions::default())
         }
 
         pub fn $with(
             &self,
-            api_key: &str,
             request: $req,
             options: RequestOptions,
         ) -> Result<$resp, OpenRouterError> {
             self.request_json_body(
                 HttpMethod::Post,
                 $path,
-                Some(api_key),
+                AuthRequirement::Required,
                 &[],
                 &request,
                 &options,
@@ -476,22 +545,27 @@ impl BlockingOpenRouterClient {
         request: AuthKeyExchangeRequest,
         options: RequestOptions,
     ) -> Result<AuthKeyExchangeResponse, OpenRouterError> {
-        self.request_json_body(HttpMethod::Post, "auth/keys", None, &[], &request, &options)
+        self.request_json_body(
+            HttpMethod::Post,
+            "auth/keys",
+            AuthRequirement::Optional,
+            &[],
+            &request,
+            &options,
+        )
     }
 }
 
 impl BlockingOpenRouterClient {
     pub fn create_audio_speech(
         &self,
-        api_key: &str,
         request: SpeechRequest,
     ) -> Result<BinaryResponse, OpenRouterError> {
-        self.create_audio_speech_with_options(api_key, request, RequestOptions::default())
+        self.create_audio_speech_with_options(request, RequestOptions::default())
     }
 
     pub fn create_audio_speech_with_options(
         &self,
-        api_key: &str,
         request: SpeechRequest,
         options: RequestOptions,
     ) -> Result<BinaryResponse, OpenRouterError> {
@@ -500,24 +574,61 @@ impl BlockingOpenRouterClient {
         self.request_binary(
             HttpMethod::Post,
             "audio/speech",
-            Some(api_key),
+            AuthRequirement::Required,
             &[],
             Some(&body),
             &options,
         )
     }
 
+    pub fn create_audio_transcription_file(
+        &self,
+        request: TranscriptionFileRequest,
+    ) -> Result<TranscriptionResponse, OpenRouterError> {
+        self.create_audio_transcription_file_with_options(request, RequestOptions::default())
+    }
+
+    pub fn create_audio_transcription_file_with_options(
+        &self,
+        request: TranscriptionFileRequest,
+        options: RequestOptions,
+    ) -> Result<TranscriptionResponse, OpenRouterError> {
+        let mut file = MultipartFile::new("file", request.bytes);
+        file.file_name = request.file_name;
+        file.content_type = request.content_type;
+
+        let mut fields = vec![("model".to_owned(), request.model)];
+        if let Some(language) = request.language {
+            fields.push(("language".to_owned(), language));
+        }
+        if let Some(response_format) = request.response_format {
+            fields.push(("response_format".to_owned(), response_format));
+        }
+        if let Some(temperature) = request.temperature {
+            fields.push(("temperature".to_owned(), temperature.to_string()));
+        }
+
+        let value = self.request_multipart_value(
+            HttpMethod::Post,
+            "audio/transcriptions",
+            AuthRequirement::Required,
+            &[],
+            vec![file],
+            fields,
+            &options,
+        )?;
+        serde_json::from_value(value).map_err(|e| OpenRouterError::Decode(e.to_string()))
+    }
+
     pub fn upload_file(
         &self,
-        api_key: &str,
         request: FileUploadRequest,
     ) -> Result<FileUploadResponse, OpenRouterError> {
-        self.upload_file_with_options(api_key, request, RequestOptions::default())
+        self.upload_file_with_options(request, RequestOptions::default())
     }
 
     pub fn upload_file_with_options(
         &self,
-        api_key: &str,
         request: FileUploadRequest,
         options: RequestOptions,
     ) -> Result<FileUploadResponse, OpenRouterError> {
@@ -527,7 +638,7 @@ impl BlockingOpenRouterClient {
         let value = self.request_multipart_value(
             HttpMethod::Post,
             "files",
-            Some(api_key),
+            AuthRequirement::Required,
             &[],
             vec![file],
             Vec::new(),
@@ -538,22 +649,20 @@ impl BlockingOpenRouterClient {
 
     pub fn get_generation(
         &self,
-        api_key: &str,
         generation_id: &str,
     ) -> Result<GenerationResponse, OpenRouterError> {
-        self.get_generation_with_options(api_key, generation_id, RequestOptions::default())
+        self.get_generation_with_options(generation_id, RequestOptions::default())
     }
 
     pub fn get_generation_with_options(
         &self,
-        api_key: &str,
         generation_id: &str,
         options: RequestOptions,
     ) -> Result<GenerationResponse, OpenRouterError> {
         self.request_json_no_body(
             HttpMethod::Get,
             "generation",
-            Some(api_key),
+            AuthRequirement::Required,
             &[("id".to_owned(), generation_id.to_owned())],
             &options,
         )
@@ -561,22 +670,20 @@ impl BlockingOpenRouterClient {
 
     pub fn get_generation_content(
         &self,
-        api_key: &str,
         generation_id: &str,
     ) -> Result<GenerationContentResponse, OpenRouterError> {
-        self.get_generation_content_with_options(api_key, generation_id, RequestOptions::default())
+        self.get_generation_content_with_options(generation_id, RequestOptions::default())
     }
 
     pub fn get_generation_content_with_options(
         &self,
-        api_key: &str,
         generation_id: &str,
         options: RequestOptions,
     ) -> Result<GenerationContentResponse, OpenRouterError> {
         self.request_json_no_body(
             HttpMethod::Get,
             "generation/content",
-            Some(api_key),
+            AuthRequirement::Required,
             &[("id".to_owned(), generation_id.to_owned())],
             &options,
         )
@@ -585,64 +692,81 @@ impl BlockingOpenRouterClient {
 
 macro_rules! dyn_get_auth {
     ($name:ident, $with:ident, $resp:ty, |$($arg:ident : $typ:ty),+| $path:expr) => {
-        pub fn $name(
+        pub fn $name<Q: crate::transport::IntoQueryParams>(
             &self,
-            api_key: &str,
             $($arg: $typ,)+
-            query: QueryParams,
+            query: Q,
         ) -> Result<$resp, OpenRouterError> {
-            self.$with(api_key, $($arg,)+ query, RequestOptions::default())
+            self.$with($($arg,)+ query, RequestOptions::default())
         }
 
-        pub fn $with(
+        pub fn $with<Q: crate::transport::IntoQueryParams>(
             &self,
-            api_key: &str,
             $($arg: $typ,)+
-            query: QueryParams,
+            query: Q,
             options: RequestOptions,
         ) -> Result<$resp, OpenRouterError> {
             let path = $path;
-            self.request_json_no_body(HttpMethod::Get, &path, Some(api_key), &query, &options)
+            let query = query.into_query_params();
+            self.request_json_no_body(
+                HttpMethod::Get,
+                &path,
+                AuthRequirement::Required,
+                &query,
+                &options,
+            )
         }
     };
 }
 
 macro_rules! dyn_get_public {
     ($name:ident, $with:ident, $resp:ty, |$($arg:ident : $typ:ty),+| $path:expr) => {
-        pub fn $name(
+        pub fn $name<Q: crate::transport::IntoQueryParams>(
             &self,
             $($arg: $typ,)+
-            query: QueryParams,
+            query: Q,
         ) -> Result<$resp, OpenRouterError> {
             self.$with($($arg,)+ query, RequestOptions::default())
         }
 
-        pub fn $with(
+        pub fn $with<Q: crate::transport::IntoQueryParams>(
             &self,
             $($arg: $typ,)+
-            query: QueryParams,
+            query: Q,
             options: RequestOptions,
         ) -> Result<$resp, OpenRouterError> {
             let path = $path;
-            self.request_json_no_body(HttpMethod::Get, &path, None, &query, &options)
+            let query = query.into_query_params();
+            self.request_json_no_body(
+                HttpMethod::Get,
+                &path,
+                AuthRequirement::Optional,
+                &query,
+                &options,
+            )
         }
     };
 }
 
 macro_rules! dyn_delete_auth {
     ($name:ident, $with:ident, $resp:ty, |$($arg:ident : $typ:ty),+| $path:expr) => {
-        pub fn $name(&self, api_key: &str, $($arg: $typ),+) -> Result<$resp, OpenRouterError> {
-            self.$with(api_key, $($arg,)+ RequestOptions::default())
+        pub fn $name(&self, $($arg: $typ),+) -> Result<$resp, OpenRouterError> {
+            self.$with($($arg,)+ RequestOptions::default())
         }
 
         pub fn $with(
             &self,
-            api_key: &str,
             $($arg: $typ,)+
             options: RequestOptions,
         ) -> Result<$resp, OpenRouterError> {
             let path = $path;
-            self.request_json_no_body(HttpMethod::Delete, &path, Some(api_key), &[], &options)
+            self.request_json_no_body(
+                HttpMethod::Delete,
+                &path,
+                AuthRequirement::Required,
+                &[],
+                &options,
+            )
         }
     };
 }
@@ -651,22 +775,27 @@ macro_rules! dyn_patch_auth {
     ($name:ident, $with:ident, $req:ty, $resp:ty, |$($arg:ident : $typ:ty),+| $path:expr) => {
         pub fn $name(
             &self,
-            api_key: &str,
             $($arg: $typ,)+
             request: $req,
         ) -> Result<$resp, OpenRouterError> {
-            self.$with(api_key, $($arg,)+ request, RequestOptions::default())
+            self.$with($($arg,)+ request, RequestOptions::default())
         }
 
         pub fn $with(
             &self,
-            api_key: &str,
             $($arg: $typ,)+
             request: $req,
             options: RequestOptions,
         ) -> Result<$resp, OpenRouterError> {
             let path = $path;
-            self.request_json_body(HttpMethod::Patch, &path, Some(api_key), &[], &request, &options)
+            self.request_json_body(
+                HttpMethod::Patch,
+                &path,
+                AuthRequirement::Required,
+                &[],
+                &request,
+                &options,
+            )
         }
     };
 }
@@ -675,22 +804,27 @@ macro_rules! dyn_put_auth {
     ($name:ident, $with:ident, $req:ty, $resp:ty, |$($arg:ident : $typ:ty),+| $path:expr) => {
         pub fn $name(
             &self,
-            api_key: &str,
             $($arg: $typ,)+
             request: $req,
         ) -> Result<$resp, OpenRouterError> {
-            self.$with(api_key, $($arg,)+ request, RequestOptions::default())
+            self.$with($($arg,)+ request, RequestOptions::default())
         }
 
         pub fn $with(
             &self,
-            api_key: &str,
             $($arg: $typ,)+
             request: $req,
             options: RequestOptions,
         ) -> Result<$resp, OpenRouterError> {
             let path = $path;
-            self.request_json_body(HttpMethod::Put, &path, Some(api_key), &[], &request, &options)
+            self.request_json_body(
+                HttpMethod::Put,
+                &path,
+                AuthRequirement::Required,
+                &[],
+                &request,
+                &options,
+            )
         }
     };
 }
@@ -699,22 +833,27 @@ macro_rules! dyn_post_auth {
     ($name:ident, $with:ident, $req:ty, $resp:ty, |$($arg:ident : $typ:ty),+| $path:expr) => {
         pub fn $name(
             &self,
-            api_key: &str,
             $($arg: $typ,)+
             request: $req,
         ) -> Result<$resp, OpenRouterError> {
-            self.$with(api_key, $($arg,)+ request, RequestOptions::default())
+            self.$with($($arg,)+ request, RequestOptions::default())
         }
 
         pub fn $with(
             &self,
-            api_key: &str,
             $($arg: $typ,)+
             request: $req,
             options: RequestOptions,
         ) -> Result<$resp, OpenRouterError> {
             let path = $path;
-            self.request_json_body(HttpMethod::Post, &path, Some(api_key), &[], &request, &options)
+            self.request_json_body(
+                HttpMethod::Post,
+                &path,
+                AuthRequirement::Required,
+                &[],
+                &request,
+                &options,
+            )
         }
     };
 }
@@ -729,48 +868,38 @@ impl BlockingOpenRouterClient {
         dyn_post_auth
     );
 
-    pub fn download_file_content(
-        &self,
-        api_key: &str,
-        file_id: &str,
-    ) -> Result<BinaryResponse, OpenRouterError> {
-        self.download_file_content_with_options(api_key, file_id, RequestOptions::default())
+    pub fn download_file_content(&self, file_id: &str) -> Result<BinaryResponse, OpenRouterError> {
+        self.download_file_content_with_options(file_id, RequestOptions::default())
     }
 
     pub fn download_file_content_with_options(
         &self,
-        api_key: &str,
         file_id: &str,
         options: RequestOptions,
     ) -> Result<BinaryResponse, OpenRouterError> {
         self.request_binary(
             HttpMethod::Get,
             &format!("files/{}/content", path_segment(file_id)),
-            Some(api_key),
+            AuthRequirement::Required,
             &[],
             None,
             &options,
         )
     }
 
-    pub fn download_video_content(
-        &self,
-        api_key: &str,
-        job_id: &str,
-    ) -> Result<BinaryResponse, OpenRouterError> {
-        self.download_video_content_with_options(api_key, job_id, RequestOptions::default())
+    pub fn download_video_content(&self, job_id: &str) -> Result<BinaryResponse, OpenRouterError> {
+        self.download_video_content_with_options(job_id, RequestOptions::default())
     }
 
     pub fn download_video_content_with_options(
         &self,
-        api_key: &str,
         job_id: &str,
         options: RequestOptions,
     ) -> Result<BinaryResponse, OpenRouterError> {
         self.request_binary(
             HttpMethod::Get,
             &format!("videos/{}/content", path_segment(job_id)),
-            Some(api_key),
+            AuthRequirement::Required,
             &[],
             None,
             &options,
@@ -861,7 +990,7 @@ mod tests {
     use crate::streaming::SseMessage;
     use crate::{
         AuthKeyExchangeRequest, BlockingOpenRouterClient, ChatCompletionRequest, ChatMessage,
-        HttpMethod, OpenRouterError, RawJsonRequest,
+        HttpMethod, OpenRouterError, PaginationQuery, RawJsonRequest, RequestOptions,
     };
 
     #[derive(Debug)]
@@ -985,26 +1114,25 @@ mod tests {
             "application/json",
             r#"{"id":"gen-123","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
         );
-        let client = BlockingOpenRouterClient::try_new_unchecked_base_url(
+        let client = BlockingOpenRouterClient::try_new_unchecked_base_url_with_api_key(
             reqwest::blocking::Client::new(),
             base_url,
+            "sk-test",
         )
         .unwrap();
 
         let response = client
-            .create_chat_completion(
-                "sk-test",
-                ChatCompletionRequest::new(
-                    "openai/gpt-4o-mini",
-                    vec![ChatMessage::user("Say hi.")],
-                ),
-            )
+            .create_chat_completion(ChatCompletionRequest::new(
+                "openai/gpt-4o-mini",
+                vec![ChatMessage::user("Say hi.")],
+            ))
             .unwrap();
 
         assert_eq!(response.id.as_deref(), Some("gen-123"));
         let recorded = request.recv().unwrap();
         assert_eq!(recorded.method, "POST");
         assert_eq!(recorded.path, "/chat/completions");
+        assert_eq!(recorded.header("authorization"), Some("Bearer sk-test"));
         assert!(recorded.body.contains("openai/gpt-4o-mini"));
     }
 
@@ -1015,20 +1143,18 @@ mod tests {
             "text/event-stream",
             "data: {\"id\":\"chunk-1\"}\n\ndata: [DONE]\n\n",
         );
-        let client = BlockingOpenRouterClient::try_new_unchecked_base_url(
+        let client = BlockingOpenRouterClient::try_new_unchecked_base_url_with_api_key(
             reqwest::blocking::Client::new(),
             base_url,
+            "sk-test",
         )
         .unwrap();
 
         let mut stream = client
-            .stream_chat_completion(
-                "sk-test",
-                ChatCompletionRequest::new(
-                    "openai/gpt-4o-mini",
-                    vec![ChatMessage::user("Say hi.")],
-                ),
-            )
+            .stream_chat_completion(ChatCompletionRequest::new(
+                "openai/gpt-4o-mini",
+                vec![ChatMessage::user("Say hi.")],
+            ))
             .unwrap();
 
         match stream.next().unwrap().unwrap() {
@@ -1045,14 +1171,18 @@ mod tests {
             "application/json",
             r#"{"key":"sk-new","user_id":null}"#,
         );
-        let client = BlockingOpenRouterClient::try_new_unchecked_base_url(
+        let client = BlockingOpenRouterClient::try_new_unchecked_base_url_with_api_key(
             reqwest::blocking::Client::new(),
             base_url,
+            "sk-should-not-send",
         )
         .unwrap();
 
         let response = client
-            .exchange_auth_code_for_api_key(AuthKeyExchangeRequest::new().with_field("code", "abc"))
+            .exchange_auth_code_for_api_key_with_options(
+                AuthKeyExchangeRequest::new().with_field("code", "abc"),
+                RequestOptions::new().without_auth(),
+            )
             .unwrap();
 
         assert_eq!(response.extra["key"], "sk-new");
@@ -1065,18 +1195,70 @@ mod tests {
     #[test]
     fn blocking_generation_cost_returns_none_for_not_yet_queryable_generation() {
         let (base_url, request) = serve_once("404 Not Found", "application/json", "{}");
-        let client = BlockingOpenRouterClient::try_new_unchecked_base_url(
+        let client = BlockingOpenRouterClient::try_new_unchecked_base_url_with_api_key(
             reqwest::blocking::Client::new(),
             base_url,
+            "sk-cost",
         )
         .unwrap();
 
-        let cost = client.generation_cost("sk-cost", "gen-789").unwrap();
+        let cost = client.generation_cost("gen-789").unwrap();
 
         assert_eq!(cost, None);
         let recorded = request.recv().unwrap();
         assert_eq!(recorded.method, "GET");
         assert_eq!(recorded.path, "/generation?id=gen-789");
+        assert_eq!(recorded.header("authorization"), Some("Bearer sk-cost"));
+    }
+
+    #[test]
+    fn blocking_missing_api_key_errors_before_send() {
+        let client = BlockingOpenRouterClient::try_new_unchecked_base_url(
+            reqwest::blocking::Client::new(),
+            "http://127.0.0.1:9",
+        )
+        .unwrap();
+
+        let err = client
+            .create_chat_completion(ChatCompletionRequest::new(
+                "openai/gpt-4o-mini",
+                vec![ChatMessage::user("Say hi.")],
+            ))
+            .unwrap_err();
+
+        assert!(matches!(err, OpenRouterError::MissingApiKey));
+    }
+
+    #[test]
+    fn blocking_list_workspace_members_sends_typed_pagination_query() {
+        let (base_url, request) = serve_once(
+            "200 OK",
+            "application/json",
+            r#"{"data":[],"total_count":0}"#,
+        );
+        let client = BlockingOpenRouterClient::try_new_unchecked_base_url_with_api_key(
+            reqwest::blocking::Client::new(),
+            base_url,
+            "sk-workspace",
+        )
+        .unwrap();
+
+        let mut query = PaginationQuery::new();
+        query.offset = Some(1);
+        query.limit = Some(2);
+
+        let response = client.list_workspace_members("production", query).unwrap();
+
+        assert_eq!(response.total_count, Some(0));
+        let recorded = request.recv().unwrap();
+        assert_eq!(
+            recorded.path,
+            "/workspaces/production/members?offset=1&limit=2"
+        );
+        assert_eq!(
+            recorded.header("authorization"),
+            Some("Bearer sk-workspace")
+        );
     }
 
     #[test]
@@ -1088,10 +1270,10 @@ mod tests {
         .unwrap();
 
         let err = client
-            .raw_json(
-                Some("sk-test"),
-                RawJsonRequest::new(HttpMethod::Get, "https://user:pass@example.test/secret"),
-            )
+            .raw_json(RawJsonRequest::new(
+                HttpMethod::Get,
+                "https://user:pass@example.test/secret",
+            ))
             .unwrap_err();
 
         assert!(matches!(err, OpenRouterError::InvalidBaseUrl(_)));
@@ -1102,14 +1284,15 @@ mod tests {
     fn live_smoke_get_current_key() {
         let api_key = std::env::var("OPENROUTER_API_KEY")
             .expect("OPENROUTER_API_KEY must be set for live smoke tests");
-        let client = BlockingOpenRouterClient::try_new(
+        let client = BlockingOpenRouterClient::try_new_with_api_key(
             reqwest::blocking::Client::new(),
             crate::DEFAULT_BASE_URL,
+            api_key,
         )
         .unwrap();
 
         let _ = client
-            .get_current_key(&api_key, Vec::new())
+            .get_current_key(())
             .expect("live get_current_key request should succeed");
     }
 }

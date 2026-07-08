@@ -5,7 +5,7 @@ pub struct RouteSpec {
     pub operation: &'static str,
 }
 
-pub const SPEC_SNAPSHOT_DATE: &str = "2026-06-28";
+pub const SPEC_SNAPSHOT_DATE: &str = "2026-07-08";
 
 pub const NON_DEPRECATED_ROUTES: &[RouteSpec] = &[
     RouteSpec {
@@ -375,12 +375,12 @@ pub const NON_DEPRECATED_ROUTES: &[RouteSpec] = &[
     },
     RouteSpec {
         method: "GET",
-        path: "/videos/{job_id}",
+        path: "/videos/{jobId}",
         operation: "get_video",
     },
     RouteSpec {
         method: "GET",
-        path: "/videos/{job_id}/content",
+        path: "/videos/{jobId}/content",
         operation: "download_video_content",
     },
     RouteSpec {
@@ -417,6 +417,11 @@ pub const NON_DEPRECATED_ROUTES: &[RouteSpec] = &[
         method: "GET",
         path: "/workspaces/{id}/budgets",
         operation: "list_workspace_budgets",
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/workspaces/{id}/members",
+        operation: "list_workspace_members",
     },
     RouteSpec {
         method: "DELETE",
@@ -497,7 +502,7 @@ mod tests {
         assert!(extra.is_empty(), "extra client operations: {extra:?}");
 
         assert_eq!(STATIC_CLIENT_OPERATIONS.len(), 38);
-        assert_eq!(DYNAMIC_CLIENT_OPERATIONS.len(), 38);
+        assert_eq!(DYNAMIC_CLIENT_OPERATIONS.len(), 39);
         assert!(include_str!("async_client.rs").contains("static_route_methods!"));
         assert!(include_str!("async_client.rs").contains("dynamic_route_methods!"));
         assert!(include_str!("blocking_client.rs").contains("static_route_methods!"));

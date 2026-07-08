@@ -35,6 +35,8 @@ pub enum OpenRouterError {
     InvalidBaseUrl(String),
     #[error("invalid request header: {0}")]
     InvalidHeader(String),
+    #[error("missing openrouter api key")]
+    MissingApiKey,
     #[error("http transport error: {0}")]
     Transport(String),
     #[error("openrouter api error: status {}", .0.status)]

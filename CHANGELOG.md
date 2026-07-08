@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-07-08
+
+### Added
+
+- Optional stored `ApiKey` support with redacted debug output and zeroization.
+- `RequestOptions` API-key override and explicit no-auth mode.
+- `GET /workspaces/{id}/members` as `list_workspace_members`.
+- Typed query structs for paginated and filterable list APIs.
+- First-class multipart transcription helper with `TranscriptionFileRequest`.
+- Runnable examples for stored-key chat, transcription, workspace members, and
+  per-request key override.
+
+### Changed
+
+- Breaking: authenticated client methods now use the stored/default API key
+  instead of taking `api_key: &str` per call.
+- Expanded typed request fields for chat, responses, messages, audio,
+  embeddings, rerank, images, and videos.
+- Replaced selected management JSON shells with typed resource/list wrappers.
+- Updated the OpenRouter route snapshot to 2026-07-08.
+
 ## [0.3.0] - 2026-06-30
 
 ### Added

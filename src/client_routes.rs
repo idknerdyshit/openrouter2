@@ -518,6 +518,12 @@ macro_rules! dynamic_route_methods {
             WorkspaceBudgetListResponse,
             |id: &str| format!("workspaces/{}/budgets", path_segment(id))
         );
+        $get_auth!(
+            list_workspace_members,
+            list_workspace_members_with_options,
+            WorkspaceMemberListResponse,
+            |id: &str| format!("workspaces/{}/members", path_segment(id))
+        );
         $delete_auth!(
             delete_workspace_budget,
             delete_workspace_budget_with_options,
@@ -594,6 +600,7 @@ macro_rules! dynamic_route_operations {
             "delete_workspace",
             "update_workspace",
             "list_workspace_budgets",
+            "list_workspace_members",
             "delete_workspace_budget",
             "upsert_workspace_budget",
             "bulk_add_workspace_members",

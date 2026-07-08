@@ -1,17 +1,18 @@
 # openrouter2
 
-`openrouter2` is a typed Rust client for the OpenRouter API. Version `0.3`
+`openrouter2` is a typed Rust client for the OpenRouter API. Version `0.4`
 targets the full current non-deprecated route set from the OpenRouter OpenAPI
-spec snapshot dated `2026-06-28`.
+spec snapshot dated `2026-07-08`.
 
-The crate keeps API keys out of client state. Pass the key per authenticated
-call; the client stores only the injected HTTP client and normalized base URL.
+Clients can store an optional default API key. Keys are wrapped in a redacted
+zeroizing type, and individual calls can override or suppress auth through
+`RequestOptions`.
 
 ## Install
 
 ```toml
 [dependencies]
-openrouter2 = "0.3"
+openrouter2 = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
@@ -20,13 +21,13 @@ Async support is enabled by default. To enable the blocking client in addition
 to the default async client:
 
 ```toml
-openrouter2 = { version = "0.3", features = ["blocking"] }
+openrouter2 = { version = "0.4", features = ["blocking"] }
 ```
 
 To build with only the blocking client:
 
 ```toml
-openrouter2 = { version = "0.3", default-features = false, features = ["blocking"] }
+openrouter2 = { version = "0.4", default-features = false, features = ["blocking"] }
 ```
 
 ## Async Usage
@@ -39,10 +40,10 @@ use openrouter2::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = AsyncOpenRouterClient::try_new(reqwest::Client::new(), DEFAULT_BASE_URL)?;
+    let client = client.with_api_key("sk-or-v1-...");
 
     let response = client
         .create_chat_completion(
-            "sk-or-v1-...",
             ChatCompletionRequest::new(
                 "openai/gpt-4o-mini",
                 vec![ChatMessage::user("Write one friendly sentence.")],
@@ -67,9 +68,9 @@ use openrouter2::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client =
         BlockingOpenRouterClient::try_new(reqwest::blocking::Client::new(), DEFAULT_BASE_URL)?;
+    let client = client.with_api_key("sk-or-v1-...");
 
     let response = client.create_chat_completion(
-        "sk-or-v1-...",
         ChatCompletionRequest::new(
             "openai/gpt-4o-mini",
             vec![ChatMessage::user("Write one friendly sentence.")],
@@ -85,13 +86,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - Async client: `AsyncOpenRouterClient` behind default feature `async`.
 - Blocking client: `BlockingOpenRouterClient` behind feature `blocking`.
+- Optional stored `ApiKey` with redacted `Debug` output and zeroization on drop.
 - Route-complete flat methods for all non-deprecated OpenRouter routes.
-- Typed request/response shells with builder helpers for common fields.
+- Typed request/response structs for high-value inference and management APIs,
+  with raw extras for newly added fields.
+- Typed query structs for paginated and filterable list APIs.
 - Unknown-preserving string enums and flattened raw `serde_json::Value` extras.
 - Typed SSE streaming for chat, responses, and messages.
 - Raw JSON, binary, and multipart escape hatches for new API fields/routes.
 - `RequestOptions` for per-call headers such as `HTTP-Referer`, `X-Title`,
-  `X-Session-Id`, and custom headers.
+  `X-Session-Id`, custom headers, API-key override, and explicit no-auth calls.
+- First-class multipart speech-to-text helper via `TranscriptionFileRequest`.
 
 `try_new` accepts HTTPS OpenRouter base URLs. Local test servers and trusted
 proxies must opt in explicitly with `try_new_unchecked_base_url`.
@@ -111,6 +116,15 @@ fields are redacted before they reach tracing or API error metadata.
 
 Deprecated OpenRouter operations are intentionally skipped. The deprecated
 Coinbase credits endpoint is not modeled.
+
+## Examples
+
+Runnable examples live in `examples/`:
+
+- `stored_key_chat.rs` sends a chat completion with a stored client key.
+- `transcribe_file.rs` submits multipart audio transcription.
+- `workspace_members.rs` lists workspace members with typed pagination.
+- `per_request_key_override.rs` overrides the stored key for one request.
 
 ## MSRV
 

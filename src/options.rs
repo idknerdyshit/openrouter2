@@ -1,6 +1,14 @@
 use reqwest::header::{HeaderName, HeaderValue};
 
-use crate::OpenRouterError;
+use crate::{ApiKey, OpenRouterError};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RequestAuth {
+    #[default]
+    Default,
+    ApiKey(ApiKey),
+    NoAuth,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequestOptions {
@@ -8,6 +16,7 @@ pub struct RequestOptions {
     pub x_title: Option<String>,
     pub session_id: Option<String>,
     pub extra_headers: Vec<(String, String)>,
+    pub auth: RequestAuth,
 }
 
 impl RequestOptions {
@@ -32,6 +41,16 @@ impl RequestOptions {
 
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.extra_headers.push((name.into(), value.into()));
+        self
+    }
+
+    pub fn with_api_key(mut self, api_key: impl Into<ApiKey>) -> Self {
+        self.auth = RequestAuth::ApiKey(api_key.into());
+        self
+    }
+
+    pub fn without_auth(mut self) -> Self {
+        self.auth = RequestAuth::NoAuth;
         self
     }
 

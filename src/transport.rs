@@ -7,6 +7,30 @@ pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 pub type QueryParams = Vec<(String, String)>;
 
+pub trait IntoQueryParams {
+    fn into_query_params(self) -> QueryParams;
+}
+
+impl IntoQueryParams for QueryParams {
+    fn into_query_params(self) -> QueryParams {
+        self
+    }
+}
+
+impl IntoQueryParams for () {
+    fn into_query_params(self) -> QueryParams {
+        Vec::new()
+    }
+}
+
+impl<const N: usize> IntoQueryParams for [(&str, &str); N] {
+    fn into_query_params(self) -> QueryParams {
+        self.into_iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect()
+    }
+}
+
 pub fn normalize_base_url(raw: impl Into<String>) -> Result<Url, String> {
     let url = normalize_unchecked_base_url(raw)?;
     validate_trusted_base_url(&url)?;
