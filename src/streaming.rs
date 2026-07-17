@@ -2,6 +2,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::OpenRouterApiError;
 use crate::OpenRouterError;
 #[cfg(feature = "async")]
 use crate::error::reqwest_error_message;
@@ -10,7 +11,14 @@ use crate::error::reqwest_error_message;
 pub enum SseMessage<T> {
     Data(T),
     Done,
+    Error(StreamApiError),
     Raw { event: Option<String>, data: Value },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StreamApiError {
+    pub error: Option<OpenRouterApiError>,
+    pub raw: Value,
 }
 
 #[cfg(feature = "async")]
@@ -169,16 +177,25 @@ where
         return Ok(Some(SseMessage::Done));
     }
 
-    match serde_json::from_str::<T>(&data) {
+    let value: Value =
+        serde_json::from_str(&data).map_err(|e| OpenRouterError::Decode(e.to_string()))?;
+    if value.get("error").is_some() {
+        let error = value
+            .get("error")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<OpenRouterApiError>(value).ok());
+        return Ok(Some(SseMessage::Error(StreamApiError {
+            error,
+            raw: value,
+        })));
+    }
+
+    match serde_json::from_value::<T>(value.clone()) {
         Ok(parsed) => Ok(Some(SseMessage::Data(parsed))),
-        Err(_) => {
-            let data =
-                serde_json::from_str(&data).map_err(|e| OpenRouterError::Decode(e.to_string()))?;
-            Ok(Some(SseMessage::Raw {
-                event: event_name,
-                data,
-            }))
-        }
+        Err(_) => Ok(Some(SseMessage::Raw {
+            event: event_name,
+            data: value,
+        })),
     }
 }
 
@@ -222,6 +239,25 @@ mod tests {
             .unwrap();
         match event {
             SseMessage::Data(value) => assert_eq!(value["text"], "hi"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_typed_stream_error_before_response_data() {
+        let event = parse_sse_event::<Value>(
+            "event: error\ndata: {\"error\":{\"message\":\"rate limited\",\"code\":429}}\n",
+        )
+        .unwrap()
+        .unwrap();
+        match event {
+            SseMessage::Error(error) => {
+                assert_eq!(
+                    error.error.unwrap().message.as_deref(),
+                    Some("rate limited")
+                );
+                assert_eq!(error.raw["error"]["code"], 429);
+            }
             other => panic!("unexpected event: {other:?}"),
         }
     }

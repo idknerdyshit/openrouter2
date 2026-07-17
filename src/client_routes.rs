@@ -114,6 +114,13 @@ macro_rules! static_route_methods {
             GuardrailCreateRequest,
             GuardrailCreateResponse
         );
+        $post_auth!(
+            submit_generation_feedback,
+            submit_generation_feedback_with_options,
+            "generation/feedback",
+            GenerationFeedbackRequest,
+            GenerationFeedbackResponse
+        );
         $get_auth!(
             list_key_assignments,
             list_key_assignments_with_options,
@@ -260,6 +267,7 @@ macro_rules! static_route_operations {
             "list_files",
             "list_guardrails",
             "create_guardrail",
+            "submit_generation_feedback",
             "list_key_assignments",
             "list_member_assignments",
             "create_image",

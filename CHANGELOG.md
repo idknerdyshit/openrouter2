@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] - 2026-07-17
+
+### Added
+
+- Generation feedback route and typed feedback request/response models.
+- Typed SSE error events preserving the API error and raw payload.
+- Async and blocking builders, environment-key constructors, typed attribution
+  headers, cursor pagination metadata, response accessors, and opt-in retries.
+- Release CI coverage for all features, blocking-only builds, packaging, and
+  publish dry runs.
+
+### Changed
+
+- Refreshed the route snapshot to the 2026-07-17 OpenRouter specification.
+
 ## [0.4.0] - 2026-07-08
 
 ### Added

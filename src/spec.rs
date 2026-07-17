@@ -5,7 +5,7 @@ pub struct RouteSpec {
     pub operation: &'static str,
 }
 
-pub const SPEC_SNAPSHOT_DATE: &str = "2026-07-08";
+pub const SPEC_SNAPSHOT_DATE: &str = "2026-07-17";
 
 pub const NON_DEPRECATED_ROUTES: &[RouteSpec] = &[
     RouteSpec {
@@ -147,6 +147,11 @@ pub const NON_DEPRECATED_ROUTES: &[RouteSpec] = &[
         method: "GET",
         path: "/generation/content",
         operation: "get_generation_content",
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/generation/feedback",
+        operation: "submit_generation_feedback",
     },
     RouteSpec {
         method: "GET",
@@ -501,7 +506,7 @@ mod tests {
         assert!(missing.is_empty(), "missing client operations: {missing:?}");
         assert!(extra.is_empty(), "extra client operations: {extra:?}");
 
-        assert_eq!(STATIC_CLIENT_OPERATIONS.len(), 38);
+        assert_eq!(STATIC_CLIENT_OPERATIONS.len(), 39);
         assert_eq!(DYNAMIC_CLIENT_OPERATIONS.len(), 39);
         assert!(include_str!("async_client.rs").contains("static_route_methods!"));
         assert!(include_str!("async_client.rs").contains("dynamic_route_methods!"));

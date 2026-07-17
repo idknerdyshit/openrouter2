@@ -24,6 +24,7 @@ mod client_routes;
 mod error;
 mod observability;
 mod options;
+mod retry;
 mod routes;
 mod spec;
 mod transport;
@@ -35,14 +36,17 @@ mod async_client;
 mod blocking_client;
 #[cfg(any(feature = "async", feature = "blocking"))]
 pub mod streaming;
+#[cfg(any(feature = "async", feature = "blocking"))]
+pub use streaming::{SseMessage, StreamApiError};
 
 #[cfg(feature = "async")]
-pub use async_client::AsyncOpenRouterClient;
+pub use async_client::{AsyncOpenRouterClient, AsyncOpenRouterClientBuilder};
 pub use auth::ApiKey;
 #[cfg(feature = "blocking")]
-pub use blocking_client::BlockingOpenRouterClient;
+pub use blocking_client::{BlockingOpenRouterClient, BlockingOpenRouterClientBuilder};
 pub use error::{ApiError, OpenRouterApiError, OpenRouterError};
 pub use options::{RequestAuth, RequestOptions};
+pub use retry::RetryPolicy;
 pub use routes::{HttpMethod, MultipartFile, RawJsonRequest, RawMultipartRequest};
 pub use spec::{NON_DEPRECATED_ROUTES, RouteSpec, SPEC_SNAPSHOT_DATE};
 pub use transport::{

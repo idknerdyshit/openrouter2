@@ -1,8 +1,8 @@
 # openrouter2
 
-`openrouter2` is a typed Rust client for the OpenRouter API. Version `0.4`
+`openrouter2` is a typed Rust client for the OpenRouter API. Version `1.0`
 targets the full current non-deprecated route set from the OpenRouter OpenAPI
-spec snapshot dated `2026-07-08`.
+spec snapshot dated `2026-07-17`.
 
 Clients can store an optional default API key. Keys are wrapped in a redacted
 zeroizing type, and individual calls can override or suppress auth through
@@ -12,7 +12,7 @@ zeroizing type, and individual calls can override or suppress auth through
 
 ```toml
 [dependencies]
-openrouter2 = "0.4"
+openrouter2 = "1.0"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
@@ -21,13 +21,13 @@ Async support is enabled by default. To enable the blocking client in addition
 to the default async client:
 
 ```toml
-openrouter2 = { version = "0.4", features = ["blocking"] }
+openrouter2 = { version = "1.0", features = ["blocking"] }
 ```
 
 To build with only the blocking client:
 
 ```toml
-openrouter2 = { version = "0.4", default-features = false, features = ["blocking"] }
+openrouter2 = { version = "1.0", default-features = false, features = ["blocking"] }
 ```
 
 ## Async Usage
@@ -97,6 +97,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `RequestOptions` for per-call headers such as `HTTP-Referer`, `X-Title`,
   `X-Session-Id`, custom headers, API-key override, and explicit no-auth calls.
 - First-class multipart speech-to-text helper via `TranscriptionFileRequest`.
+- Typed generation feedback submission and cursor-page metadata.
+- Builders, environment-key constructors, typed OpenRouter attribution headers,
+  and opt-in bounded retry policies.
 
 `try_new` accepts HTTPS OpenRouter base URLs. Local test servers and trusted
 proxies must opt in explicitly with `try_new_unchecked_base_url`.

@@ -7,6 +7,7 @@ use crate::auth::AuthRequirement;
 use crate::client_routes::{dynamic_route_methods, static_route_methods};
 use crate::error::{parse_api_error, reqwest_error_message};
 use crate::observability::RequestTrace;
+use crate::retry::{RetryPolicy, retry_after};
 use crate::routes::{HttpMethod, MultipartFile, RawJsonRequest, RawMultipartRequest};
 use crate::streaming::{AsyncSseStream, decode_async_sse};
 use crate::transport::{
@@ -20,6 +21,66 @@ pub struct AsyncOpenRouterClient {
     http: reqwest::Client,
     base_url: Url,
     api_key: Option<ApiKey>,
+    retry_policy: RetryPolicy,
+}
+
+#[derive(Debug, Clone)]
+pub struct AsyncOpenRouterClientBuilder {
+    http: reqwest::Client,
+    base_url: String,
+    api_key: Option<ApiKey>,
+    retry_policy: RetryPolicy,
+    unchecked_base_url: bool,
+}
+
+impl AsyncOpenRouterClientBuilder {
+    pub fn new() -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url: crate::transport::DEFAULT_BASE_URL.to_owned(),
+            api_key: None,
+            retry_policy: RetryPolicy::default(),
+            unchecked_base_url: false,
+        }
+    }
+
+    pub fn http(mut self, http: reqwest::Client) -> Self {
+        self.http = http;
+        self
+    }
+    pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+    pub fn api_key(mut self, api_key: impl Into<ApiKey>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+    pub fn unchecked_base_url(mut self, unchecked: bool) -> Self {
+        self.unchecked_base_url = unchecked;
+        self
+    }
+
+    pub fn build(self) -> Result<AsyncOpenRouterClient, OpenRouterError> {
+        let mut client = if self.unchecked_base_url {
+            AsyncOpenRouterClient::try_new_unchecked_base_url(self.http, self.base_url)?
+        } else {
+            AsyncOpenRouterClient::try_new(self.http, self.base_url)?
+        };
+        client.api_key = self.api_key;
+        client.retry_policy = self.retry_policy;
+        Ok(client)
+    }
+}
+
+impl Default for AsyncOpenRouterClientBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AsyncOpenRouterClient {
@@ -82,6 +143,7 @@ impl AsyncOpenRouterClient {
             http,
             base_url: base_url.map_err(OpenRouterError::InvalidBaseUrl)?,
             api_key,
+            retry_policy: RetryPolicy::default(),
         })
     }
 
@@ -95,6 +157,33 @@ impl AsyncOpenRouterClient {
 
     pub fn api_key(&self) -> Option<&ApiKey> {
         self.api_key.as_ref()
+    }
+
+    pub fn builder() -> AsyncOpenRouterClientBuilder {
+        AsyncOpenRouterClientBuilder::new()
+    }
+
+    pub fn try_default() -> Result<Self, OpenRouterError> {
+        Self::builder().build()
+    }
+
+    pub fn try_default_with_api_key(api_key: impl Into<ApiKey>) -> Result<Self, OpenRouterError> {
+        Self::builder().api_key(api_key).build()
+    }
+
+    pub fn try_from_env() -> Result<Self, OpenRouterError> {
+        let key =
+            std::env::var("OPENROUTER_API_KEY").map_err(|_| OpenRouterError::MissingApiKey)?;
+        Self::try_default_with_api_key(key)
+    }
+
+    pub fn retry_policy(&self) -> &RetryPolicy {
+        &self.retry_policy
+    }
+
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
     }
 
     pub fn with_api_key(mut self, api_key: impl Into<ApiKey>) -> Self {
@@ -199,17 +288,37 @@ impl AsyncOpenRouterClient {
         query: &[(String, String)],
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
-        let (builder, authenticated) = self.request_builder(method, path, auth, query, options)?;
-        let trace = RequestTrace::start(method, path, query, authenticated);
-        let resp = match builder.send().await {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let (builder, authenticated) =
+                self.request_builder(method, path, auth, query, options)?;
+            let trace = RequestTrace::start(method, path, query, authenticated);
+            let resp = match builder.send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self.retry_policy.should_retry_transport(method, attempt) {
+                        tokio::time::sleep(self.retry_policy.backoff(attempt, None)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            if self
+                .retry_policy
+                .should_retry_status(method, attempt, resp.status().as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                continue;
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        parse_json_response(resp).await
+            return parse_json_response(resp).await;
+        }
     }
 
     async fn request_json_body<B: Serialize + ?Sized, T: DeserializeOwned>(
@@ -221,18 +330,38 @@ impl AsyncOpenRouterClient {
         body: &B,
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
-        let (builder, authenticated) = self.request_builder(method, path, auth, query, options)?;
-        let builder = builder.json(body);
-        let trace = RequestTrace::start(method, path, query, authenticated);
-        let resp = match builder.send().await {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let (builder, authenticated) =
+                self.request_builder(method, path, auth, query, options)?;
+            let builder = builder.json(body);
+            let trace = RequestTrace::start(method, path, query, authenticated);
+            let resp = match builder.send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self.retry_policy.should_retry_transport(method, attempt) {
+                        tokio::time::sleep(self.retry_policy.backoff(attempt, None)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            if self
+                .retry_policy
+                .should_retry_status(method, attempt, resp.status().as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                continue;
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        parse_json_response(resp).await
+            return parse_json_response(resp).await;
+        }
     }
 
     async fn request_json_value(
@@ -265,21 +394,40 @@ impl AsyncOpenRouterClient {
         body: Option<&Value>,
         options: &RequestOptions,
     ) -> Result<BinaryResponse, OpenRouterError> {
-        let (mut builder, authenticated) =
-            self.request_builder(method, path, auth, query, options)?;
-        if let Some(body) = body {
-            builder = builder.json(body);
-        }
-        let trace = RequestTrace::start(method, path, query, authenticated);
-        let resp = match builder.send().await {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let (mut builder, authenticated) =
+                self.request_builder(method, path, auth, query, options)?;
+            if let Some(body) = body {
+                builder = builder.json(body);
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        parse_binary_response(resp).await
+            let trace = RequestTrace::start(method, path, query, authenticated);
+            let resp = match builder.send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self.retry_policy.should_retry_transport(method, attempt) {
+                        tokio::time::sleep(self.retry_policy.backoff(attempt, None)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            if self
+                .retry_policy
+                .should_retry_status(method, attempt, resp.status().as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                continue;
+            }
+            return parse_binary_response(resp).await;
+        }
     }
 
     #[expect(
@@ -296,19 +444,39 @@ impl AsyncOpenRouterClient {
         fields: Vec<(String, String)>,
         options: &RequestOptions,
     ) -> Result<Value, OpenRouterError> {
-        let form = multipart_form(files, fields)?;
-        let (builder, authenticated) = self.request_builder(method, path, auth, query, options)?;
-        let builder = builder.multipart(form);
-        let trace = RequestTrace::start(method, path, query, authenticated);
-        let resp = match builder.send().await {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let form = multipart_form(files.clone(), fields.clone())?;
+            let (builder, authenticated) =
+                self.request_builder(method, path, auth, query, options)?;
+            let builder = builder.multipart(form);
+            let trace = RequestTrace::start(method, path, query, authenticated);
+            let resp = match builder.send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self.retry_policy.should_retry_transport(method, attempt) {
+                        tokio::time::sleep(self.retry_policy.backoff(attempt, None)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            if self
+                .retry_policy
+                .should_retry_status(method, attempt, resp.status().as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                continue;
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        parse_json_response(resp).await
+            return parse_json_response(resp).await;
+        }
     }
 
     async fn stream_json_body<B: Serialize + ?Sized, T: DeserializeOwned + Send + 'static>(
@@ -318,25 +486,47 @@ impl AsyncOpenRouterClient {
         body: &B,
         options: &RequestOptions,
     ) -> Result<AsyncSseStream<T>, OpenRouterError> {
-        let (builder, authenticated) =
-            self.request_builder(HttpMethod::Post, path, auth, &[], options)?;
-        let builder = builder.json(body);
-        let trace = RequestTrace::start(HttpMethod::Post, path, &[], authenticated);
-        let resp = match builder.send().await {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let (builder, authenticated) =
+                self.request_builder(HttpMethod::Post, path, auth, &[], options)?;
+            let builder = builder.json(body);
+            let trace = RequestTrace::start(HttpMethod::Post, path, &[], authenticated);
+            let resp = match builder.send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self
+                        .retry_policy
+                        .should_retry_transport(HttpMethod::Post, attempt)
+                    {
+                        tokio::time::sleep(self.retry_policy.backoff(attempt, None)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            let status = resp.status();
+            if self
+                .retry_policy
+                .should_retry_status(HttpMethod::Post, attempt, status.as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                continue;
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        let status = resp.status();
-        if !status.is_success() {
-            let headers = resp.headers().clone();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(parse_api_error(status, &headers, body));
+            if !status.is_success() {
+                let headers = resp.headers().clone();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(parse_api_error(status, &headers, body));
+            }
+            return Ok(decode_async_sse(resp));
         }
-        Ok(decode_async_sse(resp))
     }
 
     pub async fn create_chat_completion(
@@ -1046,8 +1236,9 @@ fn is_not_found(err: &OpenRouterError) -> bool {
 mod tests {
     use super::AsyncOpenRouterClient;
     use crate::{
-        AuthKeyExchangeRequest, ChatCompletionRequest, ChatMessage, DEFAULT_BASE_URL, HttpMethod,
-        OpenRouterError, PaginationQuery, ProviderPreferences, RawJsonRequest, RequestOptions,
+        AuthKeyExchangeRequest, ChatCompletionRequest, ChatMessage, DEFAULT_BASE_URL,
+        GenerationFeedbackCategory, GenerationFeedbackRequest, HttpMethod, OpenRouterError,
+        PaginationQuery, ProviderPreferences, RawJsonRequest, RequestOptions,
         TranscriptionFileRequest,
     };
     use serde_json::Value;
@@ -1257,8 +1448,12 @@ mod tests {
                 RequestOptions::new()
                     .with_http_referer("https://example.test")
                     .with_x_title("Example")
+                    .with_openrouter_title("OpenRouter Example")
+                    .with_openrouter_categories("cli-agent,cloud-agent")
+                    .with_openrouter_metadata(true)
                     .with_session_id("sess-123")
                     .with_header("X-Custom", "value")
+                    .with_header("X-OpenRouter-Title", "overridden")
                     .with_api_key("sk-override"),
             )
             .await
@@ -1270,6 +1465,15 @@ mod tests {
             Some("https://example.test")
         );
         assert_eq!(recorded.header("x-title"), Some("Example"));
+        assert_eq!(
+            recorded.header("x-openrouter-title"),
+            Some("OpenRouter Example")
+        );
+        assert_eq!(
+            recorded.header("x-openrouter-categories"),
+            Some("cli-agent,cloud-agent")
+        );
+        assert_eq!(recorded.header("x-openrouter-metadata"), Some("enabled"));
         assert_eq!(recorded.header("x-session-id"), Some("sess-123"));
         assert_eq!(recorded.header("x-custom"), Some("value"));
         assert_eq!(recorded.header("authorization"), Some("Bearer sk-override"));
@@ -1298,6 +1502,35 @@ mod tests {
         assert_eq!(recorded.method, "POST");
         assert_eq!(recorded.path, "/auth/keys");
         assert_eq!(recorded.header("authorization"), None);
+    }
+
+    #[tokio::test]
+    async fn generation_feedback_posts_typed_request() {
+        let (base_url, request) = serve_once("200 OK", r#"{"data":{"success":true}}"#).await;
+        let client = AsyncOpenRouterClient::try_new_unchecked_base_url_with_api_key(
+            reqwest::Client::new(),
+            base_url,
+            "sk-management",
+        )
+        .unwrap();
+
+        let response = client
+            .submit_generation_feedback(
+                GenerationFeedbackRequest::new(
+                    "gen-123",
+                    GenerationFeedbackCategory::IncorrectResponse,
+                )
+                .comment("Repeated paragraph"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.data.and_then(|data| data.success), Some(true));
+        let recorded = request.await.unwrap();
+        assert_eq!(recorded.path, "/generation/feedback");
+        let body: Value = serde_json::from_str(&recorded.body).unwrap();
+        assert_eq!(body["generation_id"], "gen-123");
+        assert_eq!(body["category"], "incorrect_response");
     }
 
     #[tokio::test]

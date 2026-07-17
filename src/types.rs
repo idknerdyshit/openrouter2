@@ -255,6 +255,16 @@ string_enum!(ProviderSort {
     Latency => "latency",
 });
 
+string_enum!(GenerationFeedbackCategory {
+    Latency => "latency",
+    Incoherence => "incoherence",
+    IncorrectResponse => "incorrect_response",
+    Formatting => "formatting",
+    Billing => "billing",
+    ApiError => "api_error",
+    Other => "other",
+});
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum StringOrList {
@@ -273,6 +283,48 @@ pub enum ChatContent {
 impl Default for ChatContent {
     fn default() -> Self {
         Self::Text(String::new())
+    }
+}
+
+impl ChatContent {
+    pub fn text(&self) -> Option<String> {
+        match self {
+            Self::Text(value) => Some(value.clone()),
+            Self::Parts(parts) => {
+                let mut text = String::new();
+                let mut found = false;
+                for part in parts {
+                    if let Some(value) = part.text_value() {
+                        found = true;
+                        text.push_str(value);
+                    }
+                }
+                found.then_some(text)
+            }
+            Self::Null => None,
+        }
+    }
+}
+
+fn text_from_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(values) => {
+            let mut text = String::new();
+            let mut found = false;
+            for value in values {
+                if let Some(value) = text_from_value(value) {
+                    found = true;
+                    text.push_str(&value);
+                }
+            }
+            found.then_some(text)
+        }
+        Value::Object(object) => object
+            .get("content")
+            .or_else(|| object.get("text"))
+            .and_then(text_from_value),
+        _ => None,
     }
 }
 
@@ -311,6 +363,10 @@ impl ContentPart {
     pub fn with_field(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.extra.insert(key.into(), value.into());
         self
+    }
+
+    pub fn text_value(&self) -> Option<&str> {
+        self.extra.get("text").and_then(Value::as_str)
     }
 }
 
@@ -623,6 +679,76 @@ pub struct Usage {
     pub completion_tokens: Option<i64>,
     #[serde(default)]
     pub total_tokens: Option<i64>,
+    #[serde(default)]
+    pub input_tokens: Option<i64>,
+    #[serde(default)]
+    pub output_tokens: Option<i64>,
+    #[serde(default)]
+    pub prompt_tokens_details: Option<TokenDetails>,
+    #[serde(default)]
+    pub completion_tokens_details: Option<TokenDetails>,
+    #[serde(default)]
+    pub input_tokens_details: Option<TokenDetails>,
+    #[serde(default)]
+    pub output_tokens_details: Option<TokenDetails>,
+    #[serde(default)]
+    pub cost: Option<f64>,
+    #[serde(default)]
+    pub cost_details: Option<UsageCostDetails>,
+    #[serde(default)]
+    pub is_byok: Option<bool>,
+    #[serde(default, flatten)]
+    pub extra: JsonObject,
+}
+
+impl Usage {
+    pub fn prompt_tokens(&self) -> Option<i64> {
+        self.prompt_tokens
+    }
+
+    pub fn completion_tokens(&self) -> Option<i64> {
+        self.completion_tokens
+    }
+
+    pub fn input_tokens(&self) -> Option<i64> {
+        self.input_tokens.or(self.prompt_tokens)
+    }
+
+    pub fn output_tokens(&self) -> Option<i64> {
+        self.output_tokens.or(self.completion_tokens)
+    }
+
+    pub fn total_tokens(&self) -> Option<i64> {
+        self.total_tokens
+    }
+
+    pub fn cost(&self) -> Option<f64> {
+        self.cost
+    }
+
+    pub fn is_byok(&self) -> Option<bool> {
+        self.is_byok
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct TokenDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<i64>,
+    #[serde(default)]
+    pub reasoning_tokens: Option<i64>,
+    #[serde(default, flatten)]
+    pub extra: JsonObject,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct UsageCostDetails {
+    #[serde(default)]
+    pub upstream_inference_cost: Option<f64>,
+    #[serde(default)]
+    pub upstream_inference_input_cost: Option<f64>,
+    #[serde(default)]
+    pub upstream_inference_output_cost: Option<f64>,
     #[serde(default, flatten)]
     pub extra: JsonObject,
 }
@@ -641,6 +767,12 @@ pub struct ChatChoice {
     pub logprobs: Option<Value>,
     #[serde(default, flatten)]
     pub extra: JsonObject,
+}
+
+impl ChatChoice {
+    pub fn delta_text(&self) -> Option<String> {
+        self.delta.as_ref().and_then(text_from_value)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -665,6 +797,24 @@ pub struct ChatCompletionResponse {
     pub openrouter_metadata: Option<Value>,
     #[serde(default, flatten)]
     pub extra: JsonObject,
+}
+
+impl ChatCompletionResponse {
+    pub fn first_choice(&self) -> Option<&ChatChoice> {
+        self.choices.first()
+    }
+
+    pub fn text(&self) -> Option<String> {
+        self.first_choice()
+            .and_then(|choice| choice.message.as_ref())
+            .and_then(|message| message.content.as_ref())
+            .and_then(ChatContent::text)
+    }
+
+    pub fn finish_reason(&self) -> Option<&FinishReason> {
+        self.first_choice()
+            .and_then(|choice| choice.finish_reason.as_ref())
+    }
 }
 
 pub type ChatStreamChunk = ChatCompletionResponse;
@@ -845,6 +995,15 @@ pub struct ResponsesResponse {
     pub extra: JsonObject,
 }
 
+impl ResponsesResponse {
+    pub fn text(&self) -> Option<&str> {
+        self.output_text.as_deref()
+    }
+    pub fn total_tokens(&self) -> Option<i64> {
+        self.usage.as_ref()?.total_tokens
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct StreamedResponsesEvent {
     #[serde(default, rename = "type")]
@@ -857,6 +1016,12 @@ pub struct StreamedResponsesEvent {
     pub delta: Option<Value>,
     #[serde(default, flatten)]
     pub extra: JsonObject,
+}
+
+impl StreamedResponsesEvent {
+    pub fn delta_text(&self) -> Option<String> {
+        self.delta.as_ref().and_then(text_from_value)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1005,6 +1170,15 @@ pub struct MessagesResponse {
     pub usage: Option<Usage>,
     #[serde(default, flatten)]
     pub extra: JsonObject,
+}
+
+impl MessagesResponse {
+    pub fn text(&self) -> Option<String> {
+        self.content.as_ref().and_then(text_from_value)
+    }
+    pub fn finish_reason(&self) -> Option<&str> {
+        self.stop_reason.as_deref()
+    }
 }
 
 pub type MessagesStreamEvent = MessagesResponse;
@@ -1348,7 +1522,69 @@ impl FileUploadRequest {
     }
 }
 
-json_object_type!(FileListResponse);
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CursorPage<T> {
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub data: Vec<T>,
+    #[serde(default)]
+    pub first_id: Option<String>,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub last_id: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: JsonObject,
+}
+
+impl<T> CursorPage<T> {
+    pub fn new() -> Self {
+        Self {
+            cursor: None,
+            data: Vec::new(),
+            first_id: None,
+            has_more: false,
+            last_id: None,
+            extra: JsonObject::new(),
+        }
+    }
+
+    pub fn with_field(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.extra.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn next_cursor(&self) -> Option<&str> {
+        self.cursor.as_deref()
+    }
+    pub fn has_more(&self) -> bool {
+        self.has_more
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct FileMetadata {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
+    #[serde(default)]
+    pub downloadable: Option<bool>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: JsonObject,
+}
+
+pub type FileListResponse = CursorPage<FileMetadata>;
 json_object_type!(FileMetadataResponse);
 json_object_type!(FileDeleteResponse);
 json_object_type!(FileUploadResponse);
@@ -1381,6 +1617,56 @@ pub struct GenerationData {
     pub tokens_completion: Option<i64>,
     #[serde(default)]
     pub finish_reason: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: JsonObject,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GenerationFeedbackRequest {
+    pub generation_id: String,
+    pub category: GenerationFeedbackCategory,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: JsonObject,
+}
+
+impl GenerationFeedbackRequest {
+    pub fn new(
+        generation_id: impl Into<String>,
+        category: impl Into<GenerationFeedbackCategory>,
+    ) -> Self {
+        Self {
+            generation_id: generation_id.into(),
+            category: category.into(),
+            comment: None,
+            extra: JsonObject::new(),
+        }
+    }
+
+    pub fn comment(mut self, value: impl Into<String>) -> Self {
+        self.comment = Some(value.into());
+        self
+    }
+
+    pub fn with_field(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.extra.insert(key.into(), value.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct GenerationFeedbackResponse {
+    #[serde(default)]
+    pub data: Option<GenerationFeedbackData>,
+    #[serde(default, flatten)]
+    pub extra: JsonObject,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct GenerationFeedbackData {
+    #[serde(default)]
+    pub success: Option<bool>,
     #[serde(default, flatten)]
     pub extra: JsonObject,
 }
@@ -2030,9 +2316,11 @@ pub struct BulkRemoveWorkspaceMembersResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatCompletionRequest, ChatMessage, ChatRole, EmbeddingsRequest, ImageGenerationRequest,
-        MessagesRequest, ProviderPreferences, RerankDocument, RerankRequest, ResponsesRequest,
-        TranscriptionRequest, VideoGenerationRequest,
+        ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ChatRole,
+        CursorPage, EmbeddingsRequest, FileListResponse, FileMetadata, ImageGenerationRequest,
+        MessagesRequest, MessagesResponse, ProviderPreferences, RerankDocument, RerankRequest,
+        ResponsesRequest, StreamedResponsesEvent, TranscriptionRequest, Usage,
+        VideoGenerationRequest,
     };
     use serde_json::json;
 
@@ -2080,6 +2368,91 @@ mod tests {
         let messages = serde_json::to_value(messages).unwrap();
         assert!(messages.get("model").is_none());
         assert_eq!(messages["models"][0], "anthropic/claude-sonnet");
+    }
+
+    #[test]
+    fn structured_response_text_accessors_aggregate_text_blocks() {
+        let chat: ChatCompletionResponse = serde_json::from_value(json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "hello "},
+                        {"type": "image_url", "image_url": {"url": "https://example.test/image"}},
+                        {"type": "text", "text": "world"}
+                    ]
+                }
+            }]
+        }))
+        .unwrap();
+        assert_eq!(chat.text().as_deref(), Some("hello world"));
+
+        let choice: ChatChoice = serde_json::from_value(json!({
+            "delta": {"content": [{"type": "text", "text": "delta"}]}
+        }))
+        .unwrap();
+        assert_eq!(choice.delta_text().as_deref(), Some("delta"));
+
+        let messages: MessagesResponse = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "message"}, {"type": "tool_use", "id": "tool"}]
+        }))
+        .unwrap();
+        assert_eq!(messages.text().as_deref(), Some("message"));
+
+        let responses: StreamedResponsesEvent = serde_json::from_value(json!({
+            "delta": {"text": "response"}
+        }))
+        .unwrap();
+        assert_eq!(responses.delta_text().as_deref(), Some("response"));
+    }
+
+    #[test]
+    fn usage_metadata_is_typed_and_unknown_fields_are_preserved() {
+        let usage: Usage = serde_json::from_value(json!({
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.0012,
+            "cost_details": {
+                "upstream_inference_cost": 0.001,
+                "upstream_inference_input_cost": 0.0007,
+                "upstream_inference_output_cost": 0.0003
+            },
+            "is_byok": true,
+            "input_tokens_details": {"cached_tokens": 2},
+            "output_tokens_details": {"reasoning_tokens": 1},
+            "future_usage_field": "preserved"
+        }))
+        .unwrap();
+
+        assert_eq!(usage.input_tokens(), Some(10));
+        assert_eq!(usage.output_tokens(), Some(5));
+        assert_eq!(usage.total_tokens(), Some(15));
+        assert_eq!(usage.cost(), Some(0.0012));
+        assert_eq!(usage.is_byok(), Some(true));
+        assert_eq!(usage.input_tokens_details.unwrap().cached_tokens, Some(2));
+        assert_eq!(usage.extra["future_usage_field"], "preserved");
+    }
+
+    #[test]
+    fn cursor_page_preserves_metadata_and_legacy_construction_helpers() {
+        let page: FileListResponse = serde_json::from_value(json!({
+            "cursor": "next-page",
+            "data": [{"id": "file-1", "type": "file", "future_file_field": true}],
+            "first_id": "file-1",
+            "has_more": true,
+            "last_id": "file-1",
+            "future_page_field": 42
+        }))
+        .unwrap();
+
+        assert_eq!(page.next_cursor(), Some("next-page"));
+        assert!(page.has_more());
+        assert_eq!(page.data[0].extra["future_file_field"], true);
+        assert_eq!(page.extra["future_page_field"], 42);
+
+        let constructed = CursorPage::<FileMetadata>::new().with_field("custom", true);
+        assert_eq!(constructed.extra["custom"], true);
     }
 
     #[test]

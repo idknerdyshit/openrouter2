@@ -7,6 +7,7 @@ use crate::auth::AuthRequirement;
 use crate::client_routes::{dynamic_route_methods, static_route_methods};
 use crate::error::{parse_api_error, reqwest_error_message};
 use crate::observability::RequestTrace;
+use crate::retry::{RetryPolicy, retry_after};
 use crate::routes::{HttpMethod, MultipartFile, RawJsonRequest, RawMultipartRequest};
 use crate::streaming::BlockingSseStream;
 use crate::transport::{
@@ -20,6 +21,66 @@ pub struct BlockingOpenRouterClient {
     http: reqwest::blocking::Client,
     base_url: Url,
     api_key: Option<ApiKey>,
+    retry_policy: RetryPolicy,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockingOpenRouterClientBuilder {
+    http: reqwest::blocking::Client,
+    base_url: String,
+    api_key: Option<ApiKey>,
+    retry_policy: RetryPolicy,
+    unchecked_base_url: bool,
+}
+
+impl BlockingOpenRouterClientBuilder {
+    pub fn new() -> Self {
+        Self {
+            http: reqwest::blocking::Client::new(),
+            base_url: crate::transport::DEFAULT_BASE_URL.to_owned(),
+            api_key: None,
+            retry_policy: RetryPolicy::default(),
+            unchecked_base_url: false,
+        }
+    }
+
+    pub fn http(mut self, http: reqwest::blocking::Client) -> Self {
+        self.http = http;
+        self
+    }
+    pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+    pub fn api_key(mut self, api_key: impl Into<ApiKey>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+    pub fn unchecked_base_url(mut self, unchecked: bool) -> Self {
+        self.unchecked_base_url = unchecked;
+        self
+    }
+
+    pub fn build(self) -> Result<BlockingOpenRouterClient, OpenRouterError> {
+        let mut client = if self.unchecked_base_url {
+            BlockingOpenRouterClient::try_new_unchecked_base_url(self.http, self.base_url)?
+        } else {
+            BlockingOpenRouterClient::try_new(self.http, self.base_url)?
+        };
+        client.api_key = self.api_key;
+        client.retry_policy = self.retry_policy;
+        Ok(client)
+    }
+}
+
+impl Default for BlockingOpenRouterClientBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BlockingOpenRouterClient {
@@ -82,6 +143,7 @@ impl BlockingOpenRouterClient {
             http,
             base_url: base_url.map_err(OpenRouterError::InvalidBaseUrl)?,
             api_key,
+            retry_policy: RetryPolicy::default(),
         })
     }
 
@@ -95,6 +157,33 @@ impl BlockingOpenRouterClient {
 
     pub fn api_key(&self) -> Option<&ApiKey> {
         self.api_key.as_ref()
+    }
+
+    pub fn builder() -> BlockingOpenRouterClientBuilder {
+        BlockingOpenRouterClientBuilder::new()
+    }
+
+    pub fn try_default() -> Result<Self, OpenRouterError> {
+        Self::builder().build()
+    }
+
+    pub fn try_default_with_api_key(api_key: impl Into<ApiKey>) -> Result<Self, OpenRouterError> {
+        Self::builder().api_key(api_key).build()
+    }
+
+    pub fn try_from_env() -> Result<Self, OpenRouterError> {
+        let key =
+            std::env::var("OPENROUTER_API_KEY").map_err(|_| OpenRouterError::MissingApiKey)?;
+        Self::try_default_with_api_key(key)
+    }
+
+    pub fn retry_policy(&self) -> &RetryPolicy {
+        &self.retry_policy
+    }
+
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
     }
 
     pub fn with_api_key(mut self, api_key: impl Into<ApiKey>) -> Self {
@@ -190,17 +279,37 @@ impl BlockingOpenRouterClient {
         query: &[(String, String)],
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
-        let (builder, authenticated) = self.request_builder(method, path, auth, query, options)?;
-        let trace = RequestTrace::start(method, path, query, authenticated);
-        let resp = match builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let (builder, authenticated) =
+                self.request_builder(method, path, auth, query, options)?;
+            let trace = RequestTrace::start(method, path, query, authenticated);
+            let resp = match builder.send() {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self.retry_policy.should_retry_transport(method, attempt) {
+                        std::thread::sleep(self.retry_policy.backoff(attempt, None));
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            if self
+                .retry_policy
+                .should_retry_status(method, attempt, resp.status().as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                std::thread::sleep(delay);
+                attempt += 1;
+                continue;
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        parse_json_response(resp)
+            return parse_json_response(resp);
+        }
     }
 
     fn request_json_body<B: Serialize + ?Sized, T: DeserializeOwned>(
@@ -212,18 +321,38 @@ impl BlockingOpenRouterClient {
         body: &B,
         options: &RequestOptions,
     ) -> Result<T, OpenRouterError> {
-        let (builder, authenticated) = self.request_builder(method, path, auth, query, options)?;
-        let builder = builder.json(body);
-        let trace = RequestTrace::start(method, path, query, authenticated);
-        let resp = match builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let (builder, authenticated) =
+                self.request_builder(method, path, auth, query, options)?;
+            let builder = builder.json(body);
+            let trace = RequestTrace::start(method, path, query, authenticated);
+            let resp = match builder.send() {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self.retry_policy.should_retry_transport(method, attempt) {
+                        std::thread::sleep(self.retry_policy.backoff(attempt, None));
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            if self
+                .retry_policy
+                .should_retry_status(method, attempt, resp.status().as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                std::thread::sleep(delay);
+                attempt += 1;
+                continue;
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        parse_json_response(resp)
+            return parse_json_response(resp);
+        }
     }
 
     fn request_json_value(
@@ -250,21 +379,40 @@ impl BlockingOpenRouterClient {
         body: Option<&Value>,
         options: &RequestOptions,
     ) -> Result<BinaryResponse, OpenRouterError> {
-        let (mut builder, authenticated) =
-            self.request_builder(method, path, auth, query, options)?;
-        if let Some(body) = body {
-            builder = builder.json(body);
-        }
-        let trace = RequestTrace::start(method, path, query, authenticated);
-        let resp = match builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let (mut builder, authenticated) =
+                self.request_builder(method, path, auth, query, options)?;
+            if let Some(body) = body {
+                builder = builder.json(body);
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        parse_binary_response(resp)
+            let trace = RequestTrace::start(method, path, query, authenticated);
+            let resp = match builder.send() {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self.retry_policy.should_retry_transport(method, attempt) {
+                        std::thread::sleep(self.retry_policy.backoff(attempt, None));
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            if self
+                .retry_policy
+                .should_retry_status(method, attempt, resp.status().as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                std::thread::sleep(delay);
+                attempt += 1;
+                continue;
+            }
+            return parse_binary_response(resp);
+        }
     }
 
     #[expect(
@@ -281,19 +429,39 @@ impl BlockingOpenRouterClient {
         fields: Vec<(String, String)>,
         options: &RequestOptions,
     ) -> Result<Value, OpenRouterError> {
-        let form = multipart_form(files, fields)?;
-        let (builder, authenticated) = self.request_builder(method, path, auth, query, options)?;
-        let builder = builder.multipart(form);
-        let trace = RequestTrace::start(method, path, query, authenticated);
-        let resp = match builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let form = multipart_form(files.clone(), fields.clone())?;
+            let (builder, authenticated) =
+                self.request_builder(method, path, auth, query, options)?;
+            let builder = builder.multipart(form);
+            let trace = RequestTrace::start(method, path, query, authenticated);
+            let resp = match builder.send() {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self.retry_policy.should_retry_transport(method, attempt) {
+                        std::thread::sleep(self.retry_policy.backoff(attempt, None));
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            if self
+                .retry_policy
+                .should_retry_status(method, attempt, resp.status().as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                std::thread::sleep(delay);
+                attempt += 1;
+                continue;
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        parse_json_response(resp)
+            return parse_json_response(resp);
+        }
     }
 
     fn stream_json_body<B: Serialize + ?Sized, T: DeserializeOwned>(
@@ -303,25 +471,47 @@ impl BlockingOpenRouterClient {
         body: &B,
         options: &RequestOptions,
     ) -> Result<BlockingSseStream<T>, OpenRouterError> {
-        let (builder, authenticated) =
-            self.request_builder(HttpMethod::Post, path, auth, &[], options)?;
-        let builder = builder.json(body);
-        let trace = RequestTrace::start(HttpMethod::Post, path, &[], authenticated);
-        let resp = match builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                trace.transport_error(&e);
-                return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+        let mut attempt = 0;
+        loop {
+            let (builder, authenticated) =
+                self.request_builder(HttpMethod::Post, path, auth, &[], options)?;
+            let builder = builder.json(body);
+            let trace = RequestTrace::start(HttpMethod::Post, path, &[], authenticated);
+            let resp = match builder.send() {
+                Ok(resp) => resp,
+                Err(e) => {
+                    trace.transport_error(&e);
+                    if self
+                        .retry_policy
+                        .should_retry_transport(HttpMethod::Post, attempt)
+                    {
+                        std::thread::sleep(self.retry_policy.backoff(attempt, None));
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(OpenRouterError::Transport(reqwest_error_message(&e)));
+                }
+            };
+            trace.response(resp.status(), resp.headers());
+            let status = resp.status();
+            if self
+                .retry_policy
+                .should_retry_status(HttpMethod::Post, attempt, status.as_u16())
+            {
+                let delay = self
+                    .retry_policy
+                    .backoff(attempt, retry_after(resp.headers()));
+                std::thread::sleep(delay);
+                attempt += 1;
+                continue;
             }
-        };
-        trace.response(resp.status(), resp.headers());
-        let status = resp.status();
-        if !status.is_success() {
-            let headers = resp.headers().clone();
-            let body = resp.text().unwrap_or_default();
-            return Err(parse_api_error(status, &headers, body));
+            if !status.is_success() {
+                let headers = resp.headers().clone();
+                let body = resp.text().unwrap_or_default();
+                return Err(parse_api_error(status, &headers, body));
+            }
+            return Ok(BlockingSseStream::new(resp));
         }
-        Ok(BlockingSseStream::new(resp))
     }
 
     pub fn create_chat_completion(
